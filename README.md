@@ -124,7 +124,7 @@ makes remote firmware updates safe rather than exciting.
 Wire format is COBS-framed with a CRC16, so resynchronising after a dropped byte
 is "discard until the next `0x00`". The C++ and Python implementations are
 pinned to byte-identical test vectors in
-`firmware/test/native/test_codec.cpp` and
+`firmware/test/test_codec/test_codec.cpp` and
 `ros2_ws/src/kobold_bridge/test/test_link.py`; if they ever drift apart, one
 of those suites goes red long before a robot goes quiet on the bench.
 

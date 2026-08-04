@@ -26,7 +26,7 @@ offsets.
 If you change the framing itself (COBS, CRC, header layout), update **both**
 implementations and the shared test vectors in:
 
-- `firmware/test/native/test_codec.cpp` → `test_cross_language_vectors`
+- `firmware/test/test_codec/test_codec.cpp` → `test_cross_language_vectors`
 - `ros2_ws/src/kobold_bridge/test/test_link.py` → `test_cross_language_vectors`
 
 Those two tests assert the same bytes on purpose. They are the only thing

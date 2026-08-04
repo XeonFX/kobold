@@ -1,7 +1,7 @@
 """Framing codec tests — the Python half of the cross-language contract.
 
 The vectors in test_cross_language_vectors are byte-identical to those asserted
-by firmware/test/native/test_codec.cpp. If the two framing implementations ever
+by firmware/test/test_codec/test_codec.cpp. If the two framing implementations ever
 drift apart, one of these suites goes red long before a robot goes quiet on the
 bench.
 
@@ -172,7 +172,7 @@ def test_oversized_garbage_does_not_wedge_decoder():
 # ------------------------------------------------------- cross-language --
 
 def test_cross_language_vectors():
-    """Byte-for-byte agreement with firmware/test/native/test_codec.cpp.
+    """Byte-for-byte agreement with firmware/test/test_codec/test_codec.cpp.
 
     cmd_vel(linear=300, angular=-120), seq=0:
 

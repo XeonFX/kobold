@@ -17,6 +17,16 @@ namespace motors {
 inline volatile int8_t dir_left = 0;
 inline volatile int8_t dir_right = 0;
 
+// LEDC hardware channels.
+//
+// This uses the Arduino-ESP32 **2.x** API (ledcSetup + ledcAttachPin, and
+// ledcWrite addressed by CHANNEL). The 3.x one-liner `ledcAttach(pin, freq,
+// bits)` does not exist here: PlatformIO's official espressif32 platform is
+// still on core 2.x, and core 3.x needs the community pioarduino fork. Sticking
+// with the official platform is the right trade for a robot.
+constexpr uint8_t CH_L = 0;
+constexpr uint8_t CH_R = 1;
+
 inline void begin() {
   pinMode(pins::LIN1, OUTPUT);
   pinMode(pins::LIN2, OUTPUT);
@@ -25,10 +35,12 @@ inline void begin() {
   pinMode(pins::STBY, OUTPUT);
   digitalWrite(pins::STBY, LOW);  // start coasting
 
-  ledcAttach(pins::PWM_L, cfg::PWM_FREQ_HZ, cfg::PWM_RESOLUTION_BITS);
-  ledcAttach(pins::PWM_R, cfg::PWM_FREQ_HZ, cfg::PWM_RESOLUTION_BITS);
-  ledcWrite(pins::PWM_L, 0);
-  ledcWrite(pins::PWM_R, 0);
+  ledcSetup(CH_L, cfg::PWM_FREQ_HZ, cfg::PWM_RESOLUTION_BITS);
+  ledcSetup(CH_R, cfg::PWM_FREQ_HZ, cfg::PWM_RESOLUTION_BITS);
+  ledcAttachPin(pins::PWM_L, CH_L);
+  ledcAttachPin(pins::PWM_R, CH_R);
+  ledcWrite(CH_L, 0);
+  ledcWrite(CH_R, 0);
 }
 
 // Interrupt-safe hard stop. Direct register write: deterministic, and callable
@@ -42,15 +54,15 @@ inline void IRAM_ATTR stopFromISR() {
 inline void enable(bool on) { digitalWrite(pins::STBY, on ? HIGH : LOW); }
 
 inline void coast() {
-  ledcWrite(pins::PWM_L, 0);
-  ledcWrite(pins::PWM_R, 0);
+  ledcWrite(CH_L, 0);
+  ledcWrite(CH_R, 0);
   digitalWrite(pins::STBY, LOW);
   dir_left = 0;
   dir_right = 0;
 }
 
 // pwm in [-PWM_MAX, +PWM_MAX]. Positive is forward.
-inline void setSide(uint8_t in1, uint8_t in2, uint8_t pwm_pin, int32_t pwm,
+inline void setSide(uint8_t in1, uint8_t in2, uint8_t channel, int32_t pwm,
                     volatile int8_t& dir_out) {
   if (pwm > cfg::PWM_MAX) pwm = cfg::PWM_MAX;
   if (pwm < -cfg::PWM_MAX) pwm = -cfg::PWM_MAX;
@@ -58,26 +70,26 @@ inline void setSide(uint8_t in1, uint8_t in2, uint8_t pwm_pin, int32_t pwm,
   if (pwm > cfg::PWM_DEADBAND) {
     digitalWrite(in1, HIGH);
     digitalWrite(in2, LOW);
-    ledcWrite(pwm_pin, pwm);
+    ledcWrite(channel, pwm);
     dir_out = 1;
   } else if (pwm < -cfg::PWM_DEADBAND) {
     digitalWrite(in1, LOW);
     digitalWrite(in2, HIGH);
-    ledcWrite(pwm_pin, -pwm);
+    ledcWrite(channel, -pwm);
     dir_out = -1;
   } else {
     // Short brake — both inputs high stops faster than coasting and holds
     // position better on a slope.
     digitalWrite(in1, LOW);
     digitalWrite(in2, LOW);
-    ledcWrite(pwm_pin, 0);
+    ledcWrite(channel, 0);
     dir_out = 0;
   }
 }
 
 inline void set(int32_t left_pwm, int32_t right_pwm) {
-  setSide(pins::LIN1, pins::LIN2, pins::PWM_L, left_pwm, dir_left);
-  setSide(pins::RIN1, pins::RIN2, pins::PWM_R, right_pwm, dir_right);
+  setSide(pins::LIN1, pins::LIN2, CH_L, left_pwm, dir_left);
+  setSide(pins::RIN1, pins::RIN2, CH_R, right_pwm, dir_right);
 }
 
 }  // namespace motors

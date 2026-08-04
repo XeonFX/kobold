@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "kobold_codec.h"
+#include <kobold_codec.h>
 
 using namespace kobold;
 

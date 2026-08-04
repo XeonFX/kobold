@@ -39,7 +39,7 @@
 
 using namespace kobold;
 
-static Link link;
+static Link s_link;   // not `link` — collides with POSIX link() from unistd.h
 
 // ---------------------------------------------------------------- state ----
 
@@ -128,7 +128,7 @@ static void onFrame(uint8_t type, uint8_t seq, const uint8_t* payload, uint8_t l
       // ceiling for the active mode.
       st.max_speed_mm_s = limit;
       portEXIT_CRITICAL(&state_mux);
-      link.sendLog(1, m.mode ? "mode: table" : "mode: floor");
+      s_link.sendLog(1, m.mode ? "mode: table" : "mode: floor");
       break;
     }
 
@@ -179,7 +179,7 @@ static void onFrame(uint8_t type, uint8_t seq, const uint8_t* payload, uint8_t l
     case MSG_VERSION_REQ: {
       Version v{PROTOCOL_VERSION, BOARD_DRIVE, FW_VERSION_MAJOR, FW_VERSION_MINOR,
                 FW_VERSION_PATCH, FW_GIT_HASH};
-      link.send(MSG_VERSION, v);
+      s_link.send(MSG_VERSION, v);
       return;  // version is its own reply
     }
 
@@ -194,7 +194,7 @@ static void onFrame(uint8_t type, uint8_t seq, const uint8_t* payload, uint8_t l
   }
 
   Ack ack{type, seq, result};
-  link.send(MSG_ACK, ack);
+  s_link.send(MSG_ACK, ack);
 }
 
 // -------------------------------------------------------- control task ----
@@ -310,7 +310,7 @@ static void commsTask(void*) {
   TickType_t next = xTaskGetTickCount();
 
   for (;;) {
-    link.poll();
+    s_link.poll();
 
     if (xTaskGetTickCount() >= next) {
       next += period;
@@ -340,7 +340,7 @@ static void commsTask(void*) {
 
       t.cliff_mask = cliff::mask;
 
-      link.send(MSG_TELEMETRY, t);
+      s_link.send(MSG_TELEMETRY, t);
     }
 
     vTaskDelay(pdMS_TO_TICKS(1));
@@ -372,14 +372,14 @@ void setup() {
   pid_left.setGains(cfg::PID_KP_DEFAULT, cfg::PID_KI_DEFAULT, cfg::PID_KD_DEFAULT);
   pid_right.setGains(cfg::PID_KP_DEFAULT, cfg::PID_KI_DEFAULT, cfg::PID_KD_DEFAULT);
 
-  link.begin(Serial, onFrame);
+  s_link.begin(Serial, onFrame);
 
   // Announce ourselves unprompted: the bridge checks this before sending a
   // single motor command.
   Version v{PROTOCOL_VERSION, BOARD_DRIVE, FW_VERSION_MAJOR, FW_VERSION_MINOR,
             FW_VERSION_PATCH, FW_GIT_HASH};
-  link.send(MSG_VERSION, v);
-  if (!imu_ok) link.sendLog(3, "MPU-6050 not responding");
+  s_link.send(MSG_VERSION, v);
+  if (!imu_ok) s_link.sendLog(3, "MPU-6050 not responding");
 
   // Control on core 1, comms on core 0. Arduino's loop() runs on core 1 and is
   // left empty.

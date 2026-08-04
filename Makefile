@@ -27,11 +27,11 @@ protocol: ## Regenerate C++/Python bindings from protocol/protocol.yaml
 .PHONY: protocol-check
 protocol-check: ## Fail if the generated bindings are stale (CI gate)
 	@$(PYTHON) tools/gen_protocol.py >/dev/null
-	@if ! git diff --quiet -- firmware/lib/kobold_protocol/protocol_generated.h \
+	@if ! git diff --quiet -- firmware/lib/kobold_codec/protocol_generated.h \
 	       $(BRIDGE)/kobold_bridge/protocol_generated.py; then \
 	  echo "ERROR: generated protocol bindings are stale."; \
 	  echo "Run 'make protocol' and commit the result."; \
-	  git diff --stat -- firmware/lib/kobold_protocol/protocol_generated.h \
+	  git diff --stat -- firmware/lib/kobold_codec/protocol_generated.h \
 	       $(BRIDGE)/kobold_bridge/protocol_generated.py; \
 	  exit 1; \
 	fi

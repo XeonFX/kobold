@@ -14,7 +14,6 @@ result whenever protocol.yaml changes.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -25,7 +24,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "protocol" / "protocol.yaml"
-OUT_H = ROOT / "firmware" / "lib" / "kobold_protocol" / "protocol_generated.h"
+OUT_H = ROOT / "firmware" / "lib" / "kobold_codec" / "protocol_generated.h"
 OUT_PY = (
     ROOT / "ros2_ws" / "src" / "kobold_bridge" / "kobold_bridge" / "protocol_generated.py"
 )
@@ -44,18 +43,12 @@ TYPES = {
 BANNER = "GENERATED FROM protocol/protocol.yaml -- DO NOT EDIT BY HAND."
 
 
-def git_hash() -> str:
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--short=8", "HEAD"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return out.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "untracked"
+# NOTE: the generated files deliberately do NOT record the git commit.
+#
+# An earlier version stamped `// source commit: <sha>` into the output. That
+# makes the generated files stale by construction: every commit changes the sha,
+# so `make protocol-check` can never pass twice. Git already tracks provenance —
+# embedding it here bought nothing and broke reproducibility.
 
 
 def camel(name: str) -> str:
@@ -80,7 +73,6 @@ def fixed_fields(msg):
 def gen_cpp(spec) -> str:
     L = [
         "// " + BANNER,
-        f"// source commit: {git_hash()}",
         "#pragma once",
         "#include <stdint.h>",
         "",
@@ -130,7 +122,6 @@ def gen_py(spec) -> str:
     L = [
         '"""' + BANNER,
         "",
-        f"source commit: {git_hash()}",
         '"""',
         "",
         "import struct",

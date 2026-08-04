@@ -1,6 +1,5 @@
 """GENERATED FROM protocol/protocol.yaml -- DO NOT EDIT BY HAND.
 
-source commit: untracked
 """
 
 import struct

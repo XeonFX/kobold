@@ -28,7 +28,7 @@
 
 using namespace kobold;
 
-static Link link;
+static Link s_link;   // not `link` — collides with POSIX link() from unistd.h
 
 // Distance at which the hardware safety line is asserted. Runtime-tunable so
 // the host can tighten it in table mode without a reflash.
@@ -94,14 +94,14 @@ static void updateSafetyLine(uint16_t closest, uint8_t ir_mask) {
     pinMode(pins::SAFETY_OUT, OUTPUT);
     digitalWrite(pins::SAFETY_OUT, LOW);
     safety_asserted = true;
-    link.sendLog(2, "safety line asserted");
+    s_link.sendLog(2, "safety line asserted");
   } else if (!danger && safety_asserted) {
     // Release by going high-impedance rather than driving high, so the drive
     // board's pull-up defines the idle state and a dead sense board reads as
     // "no danger" rather than shorting the line.
     pinMode(pins::SAFETY_OUT, INPUT);
     safety_asserted = false;
-    link.sendLog(1, "safety line released");
+    s_link.sendLog(1, "safety line released");
   }
 }
 
@@ -148,7 +148,7 @@ static void onFrame(uint8_t type, uint8_t seq, const uint8_t* payload, uint8_t l
     case MSG_VERSION_REQ: {
       Version v{PROTOCOL_VERSION, BOARD_SENSE, FW_VERSION_MAJOR, FW_VERSION_MINOR,
                 FW_VERSION_PATCH, FW_GIT_HASH};
-      link.send(MSG_VERSION, v);
+      s_link.send(MSG_VERSION, v);
       return;
     }
 
@@ -161,7 +161,7 @@ static void onFrame(uint8_t type, uint8_t seq, const uint8_t* payload, uint8_t l
   }
 
   Ack ack{type, seq, result};
-  link.send(MSG_ACK, ack);
+  s_link.send(MSG_ACK, ack);
 }
 
 // ---- setup / loop --------------------------------------------------------
@@ -186,15 +186,15 @@ void setup() {
   display::begin();
   display::setLine(0, "kobold sense");
 
-  link.begin(Serial, onFrame);
+  s_link.begin(Serial, onFrame);
 
   Version v{PROTOCOL_VERSION, BOARD_SENSE, FW_VERSION_MAJOR, FW_VERSION_MINOR,
             FW_VERSION_PATCH, FW_GIT_HASH};
-  link.send(MSG_VERSION, v);
+  s_link.send(MSG_VERSION, v);
 }
 
 void loop() {
-  link.poll();
+  s_link.poll();
   ultrasonic::poll(pins::TRIG);
   buzzerTick();
 
@@ -218,7 +218,7 @@ void loop() {
     r.right_mm = ultrasonic::value(3);
     r.ir_mask = ir_mask;
     r.flags = safety_asserted ? FAULT_SAFETY_LINE : FAULT_NONE;
-    link.send(MSG_RANGES, r);
+    s_link.send(MSG_RANGES, r);
 
     display::showRanges(r.front_mm, r.back_mm, r.left_mm, r.right_mm, safety_asserted);
   }
