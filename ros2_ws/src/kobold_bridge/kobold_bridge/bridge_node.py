@@ -34,6 +34,8 @@ from std_msgs.msg import Bool, String
 
 from .link import Frame
 from .protocol_generated import (
+    BOARD_DRIVE,
+    BOARD_SENSE,
     FAULT_CLIFF,
     FAULT_CRITICAL_BATTERY,
     FAULT_ESTOP,
@@ -144,6 +146,10 @@ class KoboldBridge(Node):
             name="drive",
             on_frame=self.on_drive_frame,
             on_disconnect=self.on_disconnect,
+            # Both boards are CP2102 with the same factory serial, so udev can
+            # only tell them apart by socket. This makes a swapped cable an
+            # error instead of motor commands to the ultrasonic board.
+            expected_board=BOARD_DRIVE,
         )
         self.sense = SerialBoard(
             self.get_parameter("sense_port").value,
@@ -151,6 +157,7 @@ class KoboldBridge(Node):
             name="sense",
             on_frame=self.on_sense_frame,
             on_disconnect=self.on_disconnect,
+            expected_board=BOARD_SENSE,
         )
 
         self._connect()

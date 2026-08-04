@@ -19,6 +19,9 @@ import serial
 
 from .link import Frame, FrameDecoder, encode_frame
 from .protocol_generated import (
+    BOARD_DRIVE,
+    BOARD_HEAD,
+    BOARD_SENSE,
     MSG_NAMES,
     MSG_VERSION,
     MSG_VERSION_REQ,
@@ -40,6 +43,30 @@ class BoardVersionMismatch(RuntimeError):
         self.expected = expected
 
 
+class BoardIdentityMismatch(RuntimeError):
+    """The board on this port is not the board this port is supposed to hold.
+
+    Both ESP32s on this robot are CP2102 with the factory-default serial
+    "0001", so udev can only tell them apart by which socket they are in. Swap
+    the cables and /dev/robot-drive silently becomes the ultrasonic board.
+
+    The firmware announces its own board id at boot, so the protocol already
+    carries the truth. This turns a cable swap into a refusal instead of motor
+    commands going somewhere with no motors on it.
+    """
+
+    def __init__(self, port: str, got: int, expected: int):
+        names = {BOARD_DRIVE: "drive", BOARD_SENSE: "sense", BOARD_HEAD: "head"}
+        super().__init__(
+            f"{port}: this port expects the {names.get(expected, expected)} board "
+            f"(id {expected}) but the firmware reports {names.get(got, got)} "
+            f"(id {got}). The USB cables are almost certainly swapped, or the "
+            f"wrong firmware was flashed. Refusing to send commands."
+        )
+        self.got = got
+        self.expected = expected
+
+
 class SerialBoard:
     """One MCU on one serial port."""
 
@@ -50,10 +77,12 @@ class SerialBoard:
         name: str = "board",
         on_frame: Optional[Callable[[Frame], None]] = None,
         on_disconnect: Optional[Callable[[str], None]] = None,
+        expected_board: Optional[int] = None,
     ):
         self.port = port
         self.baud = baud
         self.name = name
+        self.expected_board = expected_board
         self._on_frame = on_frame
         self._on_disconnect = on_disconnect
 
@@ -141,6 +170,14 @@ class SerialBoard:
         if self.version.protocol_version != PROTOCOL_VERSION:
             raise BoardVersionMismatch(
                 self.port, self.version.protocol_version, PROTOCOL_VERSION
+            )
+
+        # Checked AFTER the protocol version, deliberately: a board speaking
+        # the wrong protocol has an unreliable board_id field too, and the
+        # protocol mismatch is the more actionable error.
+        if self.expected_board is not None and self.version.board_id != self.expected_board:
+            raise BoardIdentityMismatch(
+                self.port, self.version.board_id, self.expected_board
             )
 
         self.version_ok = True
