@@ -1,50 +1,56 @@
-# LLM — Qwen3-VL on the NPU behind an OpenAI-compatible endpoint.
+# Qwen3.5-2B on RK3588 via RKLLM, exposed as an OpenAI-compatible API.
 #
-# Deliberately NOT built on the ROS base. Nothing here needs ROS: the agent
-# talks to this over HTTP, which is precisely what makes the model swappable.
-# Point LLM_BASE_URL at a bigger model on another machine, or at a cloud API,
-# and nothing above this layer changes.
+# Version chain (validated together on the Rock 5B):
+#   Qwen3.5 RKLLM 1.3.0 artifact <-> librkllmrt 1.3.0 <-> RKNPU driver 0.9.8
 #
-# THE VERSION CHAIN — three things must agree, and only one is in this image:
-#
-#     .rkllm file  <->  librkllmrt.so (here)  <->  rknpu driver (host, v0.9.8)
-#
-# Most published .rkllm conversions target older RKLLM runtimes, so the pin
-# below is deliberately NOT the newest release. Check what your chosen model
-# was converted with (the version is usually in the filename) and match it.
-FROM python:3.12-slim AS runtime
+# The inference server is native C++. Python is not present in the runtime
+# image and no generated token crosses a process boundary.
+FROM debian:bookworm-slim AS build
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    DEBIAN_FRONTEND=noninteractive
-
-# release-v1.2.1 rather than v1.3.0: 1.3.0 adds Qwen3.5 support, but no
-# pre-converted Qwen3.5 .rkllm appears to be published, and with no x86 machine
-# you can only run what someone else converted. Bump this together with the
-# model in models/manifest.yaml, never separately.
-ARG RKLLM_TAG=release-v1.2.1
+ARG RKLLM_REF=878f9361fd3afa7e167b7079918918f78d2c1c2a
+ARG RKLLM_RT_SHA256=6a9e4fc5324c68921c3a900340361e107af7599fe34dc8fa7759b2c5ae22a6e6
+ARG RKLLM_HEADER_SHA256=80596a578f7f8e70df6eda1c2cbead3bfced14623a190258f2bd009a3d1f72cf
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates libgomp1 \
+      ca-certificates curl g++ libcpp-httplib-dev nlohmann-json3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL -o /usr/lib/librkllmrt.so \
-      "https://github.com/airockchip/rknn-llm/raw/${RKLLM_TAG}/rkllm-runtime/Linux/librkllm_api/aarch64/librkllmrt.so" \
-    && ldconfig \
-    && echo "${RKLLM_TAG}" > /etc/kobold-rkllm-version
+RUN curl -fsSL -o /usr/local/lib/librkllmrt.so \
+      "https://raw.githubusercontent.com/airockchip/rknn-llm/${RKLLM_REF}/rkllm-runtime/Linux/librkllm_api/aarch64/librkllmrt.so" \
+    && echo "${RKLLM_RT_SHA256}  /usr/local/lib/librkllmrt.so" | sha256sum -c - \
+    && curl -fsSL -o /usr/local/include/rkllm.h \
+      "https://raw.githubusercontent.com/airockchip/rknn-llm/${RKLLM_REF}/rkllm-runtime/Linux/librkllm_api/include/rkllm.h" \
+    && echo "${RKLLM_HEADER_SHA256}  /usr/local/include/rkllm.h" | sha256sum -c -
 
-RUN pip install --no-cache-dir fastapi "uvicorn[standard]" pydantic
+COPY llm/server.cpp /src/server.cpp
+RUN g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic \
+      -I/usr/local/include /src/server.cpp \
+      -L/usr/local/lib -Wl,-rpath,/usr/lib -lrkllmrt -lcpp-httplib -pthread \
+      -o /usr/local/bin/kobold-llm-server \
+    && strip /usr/local/bin/kobold-llm-server
 
-ENV RKLLM_LIB=/usr/lib/librkllmrt.so \
-    MODEL_PATH=/models/qwen3-vl-2b \
+FROM debian:bookworm-slim AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl libcpp-httplib0.11 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /usr/local/lib/librkllmrt.so /usr/lib/librkllmrt.so
+COPY --from=build /usr/local/bin/kobold-llm-server /usr/local/bin/kobold-llm-server
+RUN ldconfig \
+    && echo "release-v1.3.0 878f9361fd3afa7e167b7079918918f78d2c1c2a" \
+       > /etc/kobold-rkllm-version
+
+ENV MODEL_PATH=/models/qwen3.5-2b_w8a8_rk3588.rkllm \
+    MODEL_NAME=qwen3.5-2b-rk3588 \
     MAX_CONTEXT=4096 \
+    MAX_NEW_TOKENS=512 \
     PORT=8080
 
 EXPOSE 8080
 
-# NOTE: the server that binds librkllmrt to an OpenAI-compatible API is Phase 6.
-# This image pins and ships the runtime so the version chain can be verified on
-# hardware first — that is the part most likely to go wrong, and it is cheap to
-# check before writing anything on top of it.
-CMD ["bash", "-lc", "echo \"kobold-llm: librkllmrt $(cat /etc/kobold-rkllm-version) ready, server lands in Phase 6\" && sleep infinity"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD curl -fsS http://localhost:8080/healthz || exit 1
+
+CMD ["/usr/local/bin/kobold-llm-server"]

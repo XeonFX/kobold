@@ -7,21 +7,49 @@ Docker and is updateable over the network; the microcontrollers are flashed over
 - **Brain:** Radxa Rock 5B (RK3588S, 8 GB, 6 TOPS NPU)
 - **Reflexes:** 2× ESP32 DevKit V1 over USB
 - **Stack:** Radxa Debian 12 (BSP kernel 6.1) → Docker → ROS 2 Jazzy + RKNN/RKLLM + Hermes Agent
-- **Model:** Qwen3-VL-2B on the NPU via RKLLM (multimodal; Qwen3.5 once conversions exist — §5.2)
+- **Validated local model:** Qwen3.5-2B W8A8 plus its paired vision encoder on the NPU via RKLLM
+  1.3.0; the native C++ service exposes text chat, streaming, and tool calls (§5.2)
 
-*Rev 3 — ESP32 classic throughout (no S3); GPIO power path proven; corner IR sensors face down for
-table driving; stereo ruled out (one CSI connector); host is Radxa Debian 12, not Ubuntu.*
+*Rev 4 — Qwen3.5-2B/RKLLM 1.3.0 adopted and validated; ESP32 classic throughout (no S3); GPIO
+power path proven; stereo ruled out (one CSI connector); host is Radxa Debian 12, not Ubuntu.*
+
+### Hardware validation snapshot — 2026-08-04
+
+The current Rock 5B was tested directly rather than relying on model/runtime claims:
+
+- RKNN C API 2.3.0 reached RKNPU driver 0.9.8 and executed YOLOv5s on real silicon. The official
+  decoder produced correct detections on its reference image; live IMX219 capture sustained
+  19.4 FPS with no new camera errors during concurrent NPU inference.
+- Equivalent 500-run tests showed Python RKNNLite at 49.0 FPS and about 355 MiB RSS, C++ with float
+  outputs at 50.8 FPS and 44 MiB RSS, and C++ with raw INT8 outputs at 60.4 FPS and 38 MiB RSS.
+  Production perception therefore uses C++ and keeps Python for conversion and diagnostics.
+- Qwen3.5-2B W8A8 and its paired RKNN vision encoder loaded with RKLLM 1.3.0 on driver 0.9.8.
+  Text generated at 10.44 tokens/s and used 2.22 GiB peak container memory. The VLM correctly
+  described its reference image at 11.71 tokens/s after a 2.10 s visual prefill and peaked at
+  3.17 GB. Both paths exercised real NPU silicon.
+- A native C++ HTTP server now provides OpenAI-compatible non-streaming and SSE chat completions,
+  stateless multi-turn context, and normalized tool calls. It rejects concurrent inference with
+  `503` instead of queueing unbounded work. The HTTP text path exercised all three NPU cores.
+- The RKLLM artifact's core count is compiled into the model. During concurrent generation, the
+  detector remained at 47.8 FPS, while Qwen3.5 generation ran at 7.96 tokens/s. Keep perception
+  live by default; pause detector inference, but not capture, when a
+  fastest-possible LLM response matters.
+- English voice closed the loop with Silero VAD, Whisper base.en q5_1, and Piper Amy. On A76 cores
+  5–7, Whisper transcribed 3.35 s of synthesized speech in 3.69 s; the A55-only placement took
+  11.9 s and was rejected.
+
+These are stack-validation artifacts, not all final application nodes: YOLO11n still needs a
+versioned off-board RKNN conversion, and Hermes/app integration remains Phase 6.
 
 ---
 
 ## 0. Read this first — the findings that shape the design
 
-**1. A single multimodal model can do planning, chat, and vision — but start with Qwen3-VL, not
-Qwen3.5.** Qwen3.5-2B/4B are natively multimodal, Apache-2.0, and supported by RKLLM's toolkit. But
-having no x86 machine means **you can only run what someone else has already converted**, and no
-pre-converted Qwen3.5 `.rkllm` appears to exist yet. Qwen3-VL-2B/4B has working RK3588 NPU
-deployments today. Start there, migrate later — the `base_url` indirection makes the swap free.
-§5.1–5.2.
+**1. Qwen3.5-2B is now the adopted local model.** A community-published, version-matched RK3588
+pair now exists: a W8A8 `.rkllm` language decoder plus `.rknn` vision encoder. Both files were
+checksum-pinned and exercised with the official RKLLM 1.3.0 runtime on this Rock 5B. The production
+HTTP endpoint currently serves text/tool requests; the separately validated vision encoder still
+needs to be connected to that API. §5.1–5.2.
 
 **2. Model conversion needs x86_64, which you don't have.**
 `rknn-toolkit2` and `rkllm-toolkit` ship as `linux_x86_64` wheels only. Plan: pull pre-converted
@@ -307,7 +335,7 @@ actually matters here is instruction-following under a long tool schema, *not* i
 arguments, and visual grounding on low-resolution robot camera frames. No headline benchmark
 measures any of those.
 
-So: take Qwen3-VL as the default, then **build a 30-prompt eval from your own robot** — real photos
+Qwen3.5-2B is now the default, but still **build a 30-prompt eval from your own robot** — real photos
 from your actual camera, your actual tool list, your actual room, **and your prompts in Polish** —
 and score 2B vs 4B vs Gemma 4 on that. It's an afternoon of work and it's the only benchmark that
 describes your robot. RKLLM supports Gemma 4, SmolVLM, MiniCPM-V and InternVL3 too, so switching is
@@ -317,10 +345,10 @@ cheap if the eval surprises you.
 training priority and Gemma is generally stronger multilingually. See §7.6; at 2B, language ability
 is exactly what gets sacrificed.
 
-⚠️ **But check availability before you commit — see §5.2.** RKLLM's *toolkit* supports Qwen3.5;
-that is not the same as someone having published a converted `.rkllm` file for it. With no x86
-machine you can only run what others have already converted, and right now the proven multimodal
-option on RK3588 is **Qwen3-VL-2B/4B**, not Qwen3.5.
+**Availability is resolved for the selected 2B build — see §5.2.** The exact decoder, vision
+encoder, repository revision, checksums, and RKLLM 1.3.0 runtime are pinned in
+`models/manifest.yaml`. This validates one specific artifact chain, not arbitrary Qwen3.5
+conversions or 4B builds.
 
 **Start at 2B, not 4B.** 4B at w8a8 is ~4.5 GB of weights plus KV cache against 8 GB shared with
 ROS 2, Docker, and the camera pipeline. 2B is ~2.2 GB and leaves headroom. Cap context at
@@ -343,22 +371,24 @@ There's an active community publishing `.rkllm` files for RK3588. Known-good sou
 
 | Source | What's there |
 |---|---|
+| [`Qengineering/Qwen3.5-2B-rk3588`](https://huggingface.co/Qengineering/Qwen3.5-2B-rk3588) | **Adopted:** Qwen3.5-2B W8A8 decoder plus paired vision encoder for RKLLM 1.3.0; exact revision and SHA-256 values are pinned in the manifest |
 | [`Qengineering/Qwen3-VL-2B-NPU`](https://github.com/Qengineering/Qwen3-VL-2B-NPU) and [`-4B-NPU`](https://github.com/Qengineering/Qwen3-VL-4B-NPU) | **Qwen3-VL multimodal, running on the RK3588 NPU.** Working deployments, both sizes |
 | [`kamyarkazemi1373/Qwen3-4B-W8A8-RK3588`](https://huggingface.co/kamyarkazemi1373/Qwen3-4B-W8A8-RK3588) | Qwen3-4B, text only |
 | [`Pelochus/ezrkllm-collection`](https://huggingface.co/Pelochus/ezrkllm-collection) | Broad collection, older runtime versions |
 | `jamescallander/*_w8a8_g128_rk3588.rkllm` | Actively maintained, many models |
 | Rockchip's own `rknn_model_zoo` | Pre-converted `.rknn` for YOLO and vision backbones |
 
-**Revised recommendation: start with Qwen3-VL-2B, not Qwen3.5.**
+**Adopted recommendation: Qwen3.5-2B on RKLLM 1.3.0.**
 
-RKLLM's *toolkit* supports Qwen3.5 — that's a different claim from "someone has published a
-converted file for it." I found no evidence of pre-converted Qwen3.5 `.rkllm` files, while Qwen3-VL
-has working RK3588 NPU deployments at both 2B and 4B. With no x86 machine, **what's published is
-what you can run.**
+The selected Qengineering release supplies both required artifacts and has now been tested on the
+actual board. The native C++ server pins the official runtime library/header to Rockchip commit
+`878f9361fd3afa7e167b7079918918f78d2c1c2a`; the manifest pins the model repository revision and
+both file checksums. Do not substitute a same-named file without updating and re-running the full
+version-chain test.
 
-So: build on Qwen3-VL-2B now, and migrate to Qwen3.5 when either the community converts it or you
-set up Route C. Nothing in the architecture cares which model is behind the OpenAI-compatible
-endpoint — that's exactly why the `base_url` indirection is there.
+The previous Qwen3-1.7B/RKLLM 1.2.1 model and image remain the rollback chain. Roll back decoder
+and runtime together—never point the 1.3.0 image at the 1.2.1 artifact or vice versa. The agent's
+OpenAI `base_url` remains unchanged across either chain.
 
 ⚠️ **The version-matching trap.** A `.rkllm` file is bound to the runtime version that produced it —
 which is why community uploads put the version in the filename (`...-rk3588-rkllm-1.1.4`,
@@ -418,13 +448,17 @@ anything reactive. Fast path and slow path:
 | Depth (if going mono, §6) | Depth Anything V2 small → RKNN | 5–10 Hz | Relative depth → costmap, scaled by wheel odometry |
 | Novel objects, scene understanding, chat, planning | **Qwen3.5-2B/4B** → RKLLM | 0.1–1 Hz | The slow, smart path — on candidates and on user requests |
 
-**NPU contention:** RK3588 has three NPU cores. Pin vision to core 0 via RKNN's core mask and give
-RKLLM cores 1–2. Vision frame rate will dip while the LLM generates — fine, because the LLM runs
-between motions, not during them.
+**NPU contention:** RK3588 has three NPU cores. Pin vision to core 0 via RKNN's core mask, but do
+not assume RKLLM can be assigned the other two: core allocation is compiled into the `.rkllm`
+artifact. The adopted Qwen3.5-2B artifact reports three cores. With both running, detector
+throughput measured 47.8 FPS while generation ran at 7.96 tokens/s, versus 10.44 tokens/s for
+standalone text generation. Leave perception live for safety/awareness; suspend only detector inference when
+minimum LLM latency is more important than continuous detections.
 
-**CPU pinning matters too.** RK3588 is cores 0–3 (A55) + 4–7 (A76). Pin the audio container to the
-A55 cluster and the LLM/perception to the A76s. Audio buffer underruns on a busy box are a real
-problem and this is cheaper than a second board.
+**CPU pinning matters too.** RK3588 is cores 0–3 (A55) + 4–7 (A76). Hardware measurements with
+Whisper base.en q5_1 rejected the original A55 plan: 3.35 s of audio took 11.9 s on the A55s,
+2.94 s on all A76s, and 3.69 s on A76 cores 5–7. Reserve core 4 for perception and give voice
+cores 5–7; concurrent ASR only reduced measured detector throughput from 60.4 to 57.3 FPS.
 
 ### 5.4 "Find the thing in this picture"
 
@@ -529,7 +563,7 @@ Polish `small` at f16 costs ~500 MB, and `medium` ~1.5 GB.
 
 | Component | RAM |
 |---|---|
-| Qwen3-VL-2B w8a8 + KV cache @ 4096 | ~2.7 GB |
+| Qwen3.5-2B w8a8 + KV cache @ 4096 | ~2.2 GB text / ~3.2 GB with vision encoder |
 | Whisper **small-pl f16** | ~0.5 GB |
 | Piper TTS | ~0.1 GB |
 | YOLO11n + Depth Anything small (RKNN) | ~0.3 GB |
@@ -542,7 +576,7 @@ in `medium-pl` too and it's hopeless.
 
 **Decision rule:**
 
-- **Qwen3-VL-2B + whisper small-pl → both on the Rock 5B.** Simplest, lowest latency. Start here.
+- **Qwen3.5-2B + whisper small-pl → both on the Rock 5B.** Simplest, lowest latency. Start here.
 - **If you need the 4B model** (see §7.6 — Polish is a real argument for it) **or `medium-pl`
   accuracy → move voice to the Zero 3W.**
 
@@ -554,8 +588,8 @@ The cost is one network hop (~20–50 ms on local WiFi), which is noise next to 
 inference time. My earlier "keep ASR next to the LLM" reasoning was about latency and still holds —
 it's just that Polish makes RAM the binding constraint instead.
 
-Either way, pin the audio container to the A55 cluster (cores 0–3) so a busy A76 cluster can't cause
-buffer underruns.
+On the Rock 5B, pin voice to A76 cores 5–7 and reserve core 4 for perception. If voice moves to the
+Zero 3W, this local CPU split no longer applies.
 
 ### 7.2 The pipeline
 
@@ -729,9 +763,9 @@ long-running source of misery.
 | `nav` | Nav2 + RTAB-Map (or slam_toolbox) | §6 |
 | `camera` | CSI capture, rkmpp H.264 encode | Needs `/dev/video*` |
 | `perception` | RKNN: YOLO, SigLIP, depth, place recognition | Needs `/dev/dri` + rknpu |
-| `llm` | RKLLM server, OpenAI-compatible on :8080 | Needs `/dev/dri` + rknpu |
+| `llm` | Native C++ RKLLM 1.3 server, OpenAI-compatible text/tools/SSE on :8080 | Needs `/dev/dri` + rknpu; paired VLM encoder is validated but not yet HTTP-wired |
 | `agent` | Hermes Agent + robot MCP server | Points at `llm` via `base_url` |
-| `voice` | Silero VAD, openWakeWord, whisper.cpp, Piper | **Pin to A55 cores** |
+| `voice` | Silero VAD, openWakeWord, whisper.cpp, Piper | **Pin to A76 cores 5–7** |
 | `app` | FastAPI + PWA: chat, photo upload, video, teleop, e-stop, map | |
 | `bridge` | foxglove_bridge | Debugging |
 | `updater` | Image pulls + esptool firmware flashing | §8.4 |
@@ -883,7 +917,7 @@ and bad odometry gets stuck under the sofa.
 | Risk | Likelihood | Mitigation |
 |---|---|---|
 | RKLLM version mismatch (file ⟷ runtime ⟷ kernel driver) | **High** | Pin all three, assert at startup (§5.2). Expect to pin an *older* runtime to match published models |
-| No pre-converted Qwen3.5 for RK3588 | **Confirmed — none found** | Start on Qwen3-VL-2B (proven on RK3588), migrate later. Set up Route B/C early |
+| Community Qwen3.5 artifact disappears or changes | Low, high impact | Exact HF revision and SHA-256 values are pinned; keep local copies and the Qwen3-1.7B/1.2.1 rollback chain |
 | 4B doesn't fit alongside ROS 2 in 8 GB | **High** | Start at 2B, cap context at 4096 |
 | **Robot drives off a table** | **High** without Phase 2 discipline | Hardware cliff reflex, 0.15 m/s table mode, test on floor first |
 | L293D thermal shutdown mid-session | **Medium-high** | Heatsink now; TB6612 properly |
@@ -894,7 +928,7 @@ and bad odometry gets stuck under the sofa.
 | Polish ASR f16 + 4B model don't fit in 8 GB | **Confirmed** | 2B on-robot, or move voice to the Zero 3W (§7.1) |
 | Rosetta SIGILLs on AVX during model conversion | Medium | Parallels x86 VM, or a cloud VM (§5.2 B2/C) |
 | Side blind spot (all corner IR face down) | Medium | Slow turns, or 2 more IR modules (€4) |
-| NPU contention stutters vision during generation | Medium | Core pinning; LLM runs between motions |
+| NPU contention slows generation and vision | Medium | Pin RKNN vision to Core0; keep perception live by default, or pause detector inference for latency-critical LLM turns. RKLLM core count is model-compiled |
 | Scope creep | **High** 🙂 | The phase table |
 
 ---
@@ -927,7 +961,8 @@ kobold/
 
 1. ~~Voice language?~~ **Polish.** Drives f16 ASR models and the RAM budget (§7.1, §7.3).
 2. ~~Is either Mac Intel?~~ **No — both ARM.** Routes B1/B2/C in §5.2.
-3. ~~Which Qwen3.5 sizes are published as `.rkllm`?~~ **None found.** Start on Qwen3-VL-2B.
+3. ~~Which Qwen3.5 size is usable now?~~ **Qwen3.5-2B W8A8 plus its paired vision encoder, pinned
+   to RKLLM 1.3.0.** The 4B remains unevaluated and is not the default.
 4. **Which camera has the wider FOV?** Measure both against a ruler at 1 m (§6). One CSI slot, so
    the winner goes on the robot and the loser becomes the room-node camera.
 5. **Motor voltage rating** on the chassis motors — determines whether 8 V is abuse (§3.1).

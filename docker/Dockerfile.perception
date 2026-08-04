@@ -26,6 +26,7 @@ ARG RKNN_VERSION=2.3.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates \
+      python3-pip \
       python3-opencv \
       python3-numpy \
       ros-jazzy-cv-bridge \
@@ -43,10 +44,23 @@ RUN curl -fsSL -o /usr/lib/librknnrt.so \
 # rknn-toolkit-lite2 is the INFERENCE half. The conversion toolkit
 # (rknn-toolkit2) is x86_64-only and deliberately absent: models are converted
 # elsewhere and arrive as artifacts. See models/manifest.yaml.
-RUN pip3 install --no-cache-dir --break-system-packages \
-      "rknn-toolkit-lite2==${RKNN_VERSION}" \
-    || echo "WARN: rknn-toolkit-lite2 wheel unavailable for this Python; \
-the C runtime in /usr/lib/librknnrt.so is still usable via ctypes"
+#
+# NOT on PyPI -- it ships as per-Python-version wheels in the airockchip repo,
+# so `pip install rknn-toolkit-lite2` can never resolve. An earlier revision of
+# this file did exactly that behind a `|| echo WARN` fallback, which shipped an
+# image with no Python API at all and printed a confidently wrong reason.
+#
+# The cp tag is derived from the interpreter rather than hardcoded, so if the
+# ROS base moves to a Python with no published wheel the build FAILS LOUDLY
+# here instead of silently omitting the package.
+RUN PYTAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')" \
+    && WHEEL="rknn_toolkit_lite2-${RKNN_VERSION}-${PYTAG}-${PYTAG}-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
+    && echo "installing ${WHEEL}" \
+    && curl -fsSL -o "/tmp/${WHEEL}" \
+         "https://github.com/airockchip/rknn-toolkit2/raw/v${RKNN_VERSION}/rknn-toolkit-lite2/packages/${WHEEL}" \
+    && pip3 install --no-cache-dir --break-system-packages "/tmp/${WHEEL}" \
+    && rm -f "/tmp/${WHEEL}" \
+    && python3 -c "from rknnlite.api import RKNNLite; print('rknnlite import OK')"
 
 ENV RKNN_LIB=/usr/lib/librknnrt.so \
     MODELS_DIR=/models

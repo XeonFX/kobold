@@ -32,24 +32,25 @@ host_requirements:
 models:
 
   # --------------------------------------------------------------- language --
-  # Qwen3-VL-2B rather than Qwen3.5: RKLLM's toolkit supports Qwen3.5, but with
-  # no x86 machine you can only run what someone else has already converted, and
-  # no pre-converted Qwen3.5 .rkllm appears to be published. Qwen3-VL has working
-  # RK3588 deployments today. Swapping later is a base_url change and nothing else.
+  # Language decoder and vision encoder are one atomic RKLLM 1.3.0 release.
+  # Both files and the runtime were exercised together on the Rock 5B; never
+  # upgrade only one member of this version chain.
   llm:
-    name: qwen3-vl-2b
-    version: w8a8-rkllm1.2.1
-    file: Qwen3-VL-2B_w8a8_rk3588.rkllm
-    # TODO: fill in once you pick a specific published conversion.
-    # Verify the runtime version in the filename matches librkllmrt below.
-    url: ""
-    sha256: ""
-    size_mb: 2200
-    rkllm_runtime: "1.2.1"
+    name: qwen3.5-2b
+    version: w8a8-rk3588-rkllm1.3.0
+    file: qwen3.5-2b_w8a8_rk3588.rkllm
+    url: https://huggingface.co/Qengineering/Qwen3.5-2B-rk3588/resolve/52d292f0dfaa22bcbf9048193e7e0e3ce3fa3309/qwen3.5-2b_w8a8_rk3588.rkllm
+    sha256: 3185384ce7b13805b15f93848d2cec549f6f2e97a0b4b623398cb5835bf62172
+    size_mb: 2842
+    rkllm_runtime: "1.3.0"
+    extra_files:
+      - file: qwen3.5-2b_vision_rk3588.rknn
+        sha256: 1976b3f70d776b452fb41e905d20535bccfa0d70baa279204a1b55b32485f5dc
     notes: >
-      Multimodal — handles both planning/chat and "is this the same object?"
-      verification. Cap context at 4096; the KV cache is what eats RAM, and the
-      262K window is irrelevant for a robot.
+      Multimodal slow path. Cap context at 4096 on the 8 GB board. Measured
+      text generation was 10.44 tok/s at 2216 MB peak; the paired vision path
+      was 11.71 tok/s after a 2.10 s prefill at 3165 MB peak. RKLLM uses all
+      three NPU cores; YOLO remains the independent reactive perception path.
 
   # ------------------------------------------------------------------ vision --
   detector:
@@ -96,27 +97,35 @@ models:
   # budget in docs/PROJECT_PLAN.md section 7.1 first.
   asr:
     name: whisper-base.en
-    version: ggml-q5_0
-    file: ggml-base.en-q5_0.bin
-    url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_0.bin
-    sha256: ""
+    version: ggml-q5_1
+    file: ggml-base.en-q5_1.bin
+    url: https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en-q5_1.bin
+    sha256: 4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f
     size_mb: 60
-    notes: CPU only, pinned to the A55 cluster. ~3-4x realtime.
+    notes: >
+      CPU only, pinned to A76 cores 5-7. Re-measured 2026-08-04 on a 29.3 s
+      Piper-synthesised clip, 3 threads, whisper default 5-beam decode:
+      3.05x real time idle, 2.62x with the LLM generating concurrently. An
+      earlier note here said 1.1x; that figure could not be reproduced and
+      should not be trusted for capacity planning. Clean synthesised speech in
+      a single 30 s window is the easy case, so treat 2.6x as an upper bound
+      until measured against real microphone audio and streaming utterances.
 
   tts:
     name: piper-en_US-amy-medium
     version: "1.0"
     file: en_US-amy-medium.onnx
-    url: https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx
-    sha256: ""
+    url: https://huggingface.co/rhasspy/piper-voices/resolve/9f967d15e9ccdf43078586d1476ee70f314401bd/en/en_US/amy/medium/en_US-amy-medium.onnx
+    sha256: b3a6e47b57b8c7fbe6a0ce2518161a50f59a9cdd8a50835c02cb02bdd6206c18
     size_mb: 63
     extra_files:
-      - en_US-amy-medium.onnx.json
+      - file: en_US-amy-medium.onnx.json
+        sha256: 95a23eb4d42909d38df73bb9ac7f45f597dbfcde2d1bf9526fdeaf5466977d77
 
   vad:
     name: silero-vad
-    version: "5.1"
+    version: "5.1.2"
     file: silero_vad.onnx
-    url: https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
-    sha256: ""
+    url: https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx
+    sha256: 2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f
     size_mb: 2

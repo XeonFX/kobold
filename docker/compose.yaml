@@ -42,6 +42,7 @@ services:
     volumes:
       - ../ros2_ws/src/kobold_bringup/config:/config:ro
       - /data/maps:/data/maps
+    cpuset: "0,1,2,3"          # A55 cluster — see note above the A76 services
 
   # -------------------------------------------------------------- bridge ----
   # The only container that touches the microcontrollers. Refuses to send a
@@ -60,6 +61,7 @@ services:
       - /dev/robot-drive:/dev/robot-drive
       - /dev/robot-sense:/dev/robot-sense
     group_add: ["dialout"]
+    cpuset: "0,1,2,3"
 
   # ----------------------------------------------------------------- nav ----
   nav:
@@ -71,6 +73,10 @@ services:
     volumes:
       - ../ros2_ws/src/kobold_bringup/config:/config:ro
       - /data/maps:/data/maps
+    # Nav2 is the heaviest unpinned consumer and would otherwise land on the
+    # A76s mid-replan, stealing exactly the cycles ASR has no margin for.
+    # If planning proves too slow here, take a core from the LLM, not voice.
+    cpuset: "0,1,2,3"
     profiles: [nav]          # Phase 5 — not started until the lidar arrives
 
   # -------------------------------------------------------------- camera ----
@@ -80,21 +86,32 @@ services:
     container_name: kobold-camera
     command: ros2 launch kobold_perception camera.launch.py
     devices:
-      - /dev/video0:/dev/video0
+      # ISP mainpath, not /dev/video0 (that is the raw CIF endpoint).
+      - /dev/video11:/dev/video11
+      # IMX219 controls: exposure, gain, and orientation.
+      - /dev/v4l-subdev2:/dev/v4l-subdev2
       - /dev/dri:/dev/dri      # hardware H.264 encode via rkmpp
     group_add: ["video", "render"]
+    cpuset: "0,1,2,3"
     profiles: [perception]
 
   # ---------------------------------------------------------- perception ----
-  # YOLO + SigLIP + monocular depth. Pinned to NPU core 0 so the LLM can have
-  # cores 1-2; they will contend otherwise, and vision is the one that must
-  # stay realtime.
+  # YOLO + SigLIP + monocular depth. RKNN vision is pinned to NPU core 0.
+  # The selected RKLLM artifact is compiled for all three cores, so concurrent
+  # generation still contends with vision; measured concurrent throughput stays
+  # usable at 47.8 detector FPS and 7.96 LLM tokens/s.
   perception:
     <<: *common
     image: ${IMAGE_PERCEPTION:-ghcr.io/xeonfx/kobold-perception:dev}
     container_name: kobold-perception
     command: ros2 launch kobold_perception perception.launch.py
     depends_on: [base]
+    # RKNNLite identifies the SoC through /proc/device-tree, which resolves
+    # into /sys/firmware. Docker masks /sys/firmware by default; ordinary bind
+    # mounts are applied before that mask and disappear. Unmask system paths
+    # without granting the much broader --privileged capability set.
+    security_opt:
+      - systempaths=unconfined
     environment:
       <<: *common-env
       RKNN_CORE_MASK: "1"
@@ -104,44 +121,63 @@ services:
     devices:
       - /dev/dri:/dev/dri
     group_add: ["render", "video"]
-    # A76 cluster — perception is the heavier of the two NPU consumers on CPU side.
-    cpuset: "4,5,6,7"
+    # Reserve one A76 for capture/pre/post-processing. The raw C++ path sustains
+    # ~58 FPS here while voice uses the other three A76s.
+    cpuset: "4"
     profiles: [perception]
 
   # ----------------------------------------------------------------- llm ----
-  # OpenAI-compatible endpoint. Everything above it talks HTTP, which is why
-  # swapping Qwen3-VL for Qwen3.5 (or a cloud model) is a config change.
+  # Native C++ OpenAI-compatible endpoint using the validated Qwen3.5-2B /
+  # RKLLM 1.3.0 chain. The paired vision encoder is pinned in the manifest;
+  # this HTTP endpoint currently serves text chat/tool requests.
   llm:
     <<: *common
     image: ${IMAGE_LLM:-ghcr.io/xeonfx/kobold-llm:dev}
     container_name: kobold-llm
     environment:
       <<: *common-env
-      RKNN_CORE_MASK: "6"          # NPU cores 1 and 2
-      MODEL_PATH: /models/qwen3-vl-2b
+      # Core allocation is embedded in an RKLLM model. This artifact reports
+      # npu_core_num=3; RKNN_CORE_MASK does not constrain it.
+      MODEL_PATH: /models/qwen3.5-2b_w8a8_rk3588.rkllm
+      MODEL_NAME: qwen3.5-2b-rk3588
       MAX_CONTEXT: "4096"          # the KV cache is what eats RAM, not the weights
+      MAX_NEW_TOKENS: "512"
+      API_KEY: "${LLM_API_KEY:-}"  # optional; set in the gitignored .env
     volumes:
       - /data/models:/models:ro
     devices:
       - /dev/dri:/dev/dri
     group_add: ["render"]
-    cpuset: "4,5,6,7"
+    # Was "4,5,6,7", which silently took every A76 and contradicted the
+    # partition both neighbouring services describe. Measured 2026-08-04, LLM
+    # generating continuously while ASR transcribes a 29.3 s clip:
+    #
+    #   llm 4,5,6,7   ASR 2.20x real time   LLM 8.59 tok/s
+    #   llm 4,5       ASR 2.62x real time   LLM 8.38 tok/s
+    #
+    # 19% more ASR headroom for 2.4% less generation. cpu_shares was tried and
+    # rejected: 1024 is the default so it changes nothing, and 256 starved the
+    # LLM to a single completion per window.
+    cpuset: "4,5"
     profiles: [ai]
 
   # --------------------------------------------------------------- voice ----
-  # Pinned to the A55 cluster. Audio underruns on a busy box are a real problem
-  # and this is far cheaper than adding a second SBC to avoid them.
+  # Three A76s: measured ASR is ~1.1x real time here versus 3.6x slower than
+  # real time on all four A55s. Core 4 stays with perception, and the LLM is
+  # held to 4-5 so these three are contended by at most one other NPU consumer.
+  # 1.1x is only 10% of headroom -- if this ever drops under 1.0x under load,
+  # move to tiny.en (~3x faster, real accuracy cost) rather than hoping.
   voice:
     <<: *common
     image: ${IMAGE_VOICE:-ghcr.io/xeonfx/kobold-voice:dev}
     container_name: kobold-voice
     environment:
       <<: *common-env
-      ASR_MODEL: /models/ggml-base.en-q5_0.bin
+      ASR_MODEL: /models/ggml-base.en-q5_1.bin
       TTS_VOICE: /models/en_US-amy-medium.onnx
     volumes:
       - /data/models:/models:ro
-    cpuset: "0,1,2,3"
+    cpuset: "5,6,7"
     profiles: [ai]
 
   # --------------------------------------------------------------- agent ----

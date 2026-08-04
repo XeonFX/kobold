@@ -1,8 +1,8 @@
-# Voice — VAD, ASR, TTS. CPU only, pinned to the A55 cluster in compose.yaml.
+# Voice — VAD, ASR, TTS. CPU only, pinned to A76 cores 5-7 in compose.yaml.
 #
-# No NPU here on purpose: whisper.cpp and Piper are efficient enough on the A55
-# cores, and leaving the NPU entirely to vision and the LLM avoids contention on
-# the one resource that has none to spare.
+# No NPU here on purpose: leaving it to vision and the LLM avoids contention.
+# Hardware measurements rejected the original A55 plan: base.en took 11.9 s for
+# 3.35 s of audio there, versus 3.69 s on three A76 cores.
 #
 # English-only. Polish Whisper fine-tunes are distributed as f16 (quantising
 # wrecks Polish transcription), which costs ~500 MB instead of the ~60 MB an
@@ -69,7 +69,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 
 # Models are volume-mounted from /data/models, never baked in — they change on a
 # different cadence from code. See models/manifest.yaml.
-ENV ASR_MODEL=/models/ggml-base.en-q5_0.bin \
+ENV ASR_MODEL=/models/ggml-base.en-q5_1.bin \
     TTS_VOICE=/models/en_US-amy-medium.onnx \
     VAD_MODEL=/models/silero_vad.onnx
 

@@ -53,6 +53,52 @@ def sha256(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+def handle_extras(model: dict, base_url: str) -> tuple[int, int]:
+    extra_ok = extra_warn = 0
+    for extra_spec in model.get("extra_files") or []:
+        if isinstance(extra_spec, str):
+            extra = extra_spec
+            extra_want = ""
+        else:
+            extra = extra_spec["file"]
+            extra_want = (extra_spec.get("sha256") or "").strip()
+        ex_url = base_url.rsplit("/", 1)[0] + "/" + extra
+        ex_target = dest / extra
+
+        if ex_target.exists() and mode != "force":
+            if not extra_want or sha256(ex_target) == extra_want:
+                detail = "checksum verified" if extra_want else "no checksum"
+                print(f"  {C('OK', '32')} companion {extra} ({detail})")
+                extra_ok += 1
+                continue
+            print(f"  {C('CORRUPT', '31')} companion checksum mismatch: {extra}")
+            extra_warn += 1
+            if mode == "verify":
+                continue
+
+        if mode == "verify":
+            print(f"  {C('MISSING', '31')} companion {extra}")
+            extra_warn += 1
+            continue
+
+        print(f"  fetching companion {extra}")
+        ex_tmp = ex_target.with_suffix(ex_target.suffix + ".part")
+        try:
+            urllib.request.urlretrieve(ex_url, ex_tmp)
+        except Exception as error:
+            print(f"    {C('WARN', '33')} {error}")
+            ex_tmp.unlink(missing_ok=True)
+            extra_warn += 1
+            continue
+        if extra_want and sha256(ex_tmp) != extra_want:
+            print(f"    {C('WARN', '33')} companion checksum mismatch: {extra}")
+            ex_tmp.unlink(missing_ok=True)
+            extra_warn += 1
+            continue
+        ex_tmp.replace(ex_target)
+        extra_ok += 1
+    return extra_ok, extra_warn
+
 for key, m in (spec.get("models") or {}).items():
     name, fname = m.get("name", key), m.get("file", "")
     url, want = m.get("url", ""), (m.get("sha256") or "").strip()
@@ -83,11 +129,17 @@ for key, m in (spec.get("models") or {}).items():
             warn_count += 1
             ok += 1
         if not need:
+            extra_ok, extra_warn = handle_extras(m, url)
+            ok += extra_ok
+            warn_count += extra_warn
             continue
 
     if mode == "verify":
         print(f"  {C('MISSING', '31')}")
         warn_count += 1
+        extra_ok, extra_warn = handle_extras(m, url)
+        ok += extra_ok
+        warn_count += extra_warn
         continue
 
     print(f"  downloading {url}")
@@ -100,6 +152,9 @@ for key, m in (spec.get("models") or {}).items():
         print(f"  {C('FAILED', '31')} download error")
         tmp.unlink(missing_ok=True)
         warn_count += 1
+        extra_ok, extra_warn = handle_extras(m, url)
+        ok += extra_ok
+        warn_count += extra_warn
         continue
 
     if want:
@@ -109,21 +164,18 @@ for key, m in (spec.get("models") or {}).items():
             print(f"    want {want}\n    got  {got}")
             tmp.unlink(missing_ok=True)
             warn_count += 1
+            extra_ok, extra_warn = handle_extras(m, url)
+            ok += extra_ok
+            warn_count += extra_warn
             continue
 
     tmp.rename(target)
     print(f"  {C('OK', '32')} installed -> {target}")
     ok += 1
 
-    for extra in m.get("extra_files") or []:
-        ex_url = url.rsplit("/", 1)[0] + "/" + extra
-        ex_target = dest / extra
-        if not ex_target.exists():
-            print(f"  fetching companion {extra}")
-            try:
-                urllib.request.urlretrieve(ex_url, ex_target)
-            except Exception as e:
-                print(f"    {C('WARN', '33')} {e}")
+    extra_ok, extra_warn = handle_extras(m, url)
+    ok += extra_ok
+    warn_count += extra_warn
 
 print(f"\n{ok} ok, {warn_count} need attention")
 sys.exit(1 if warn_count and mode == "verify" else 0)
