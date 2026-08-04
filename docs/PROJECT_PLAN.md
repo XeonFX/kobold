@@ -231,8 +231,27 @@ top-balancing chore). Two 3S1P packs paralleled after their BMSes into a common 
 split into separate rails at the regulator stage.
 
 Before first parallel connection, charge both individually and confirm they're within ~50 mV, or
-you'll get a large circulating current the moment you join them. After that, charge as a joined bank
-from one 12.6 V CC/CV charger — which you still need to buy.
+you'll get a large circulating current the moment you join them.
+
+**Charging is already covered by your bench equipment** — no charger purchase needed. The KORAD
+KA3005D (0–30 V / 0–5 A linear) *is* a CC/CV source, which is the whole of Li-ion charging:
+
+| Mode | Set | Notes |
+|---|---|---|
+| Full charge | **12.6 V**, limit 1.5 A | ~0.45C. Maximum runtime |
+| Daily / storage | **12.0 V**, limit 1.5 A | 4.0 V/cell ≈ 85%. Roughly **doubles cycle life** — use this most of the time |
+| Done when | current tapers to ~0.3 A | C/10. The live readout is how you know |
+
+Your spare fixed 12 V supply does the daily-charge row on its own, which makes it the better routine
+charger of the two — 85% is where Li-ion wants to live.
+
+⚠️ **A bench supply has no termination logic.** It will hold 12.6 V indefinitely, and sitting at full
+charge for days ages the cells. Disconnect once the current tapers; don't leave it overnight.
+
+Balancing is handled by the BMS boards (confirmed), so nothing further is needed there.
+
+The same supply is worth using during Phases 0–3 to **power the robot directly at 5.1 V with no
+battery in the loop**, and to replace the estimates in §4.3 with measured draw.
 
 ### 4.2 Rails
 

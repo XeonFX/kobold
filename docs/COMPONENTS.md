@@ -104,7 +104,7 @@ it out twice over. See PROJECT_PLAN §6.
 | 35 | **2× HW-674 buck, 8 A** (XL4016) | 🟢 | **#1: Rock 5B @ 5.1 V into GPIO pins 2 & 4 (proven working).** #2: motor rail @ 6.5–8 V | The GPIO path works but bypasses the board's input protection — **add a 5.6–6.0 V TVS diode and a 1000 µF cap at the header.** If the XL4016's high-side switch fails short, full pack voltage lands on a €150 board. €0.30 of insurance |
 | 36 | **4× LM2596 HW-411 buck, 3 A** | 🟢 | 5 V logic rail; **separate** 5 V servo rail; spares | Keep servos on their own regulator — servo inrush browns out logic rails and produces bugs you'll chase for days |
 | 37 | **4× MT3608 boost, 2 A** | 🟡 | Spare. Not needed: every rail steps *down* from 3S | Useful if you ever want 12 V for something from a lower source |
-| 38 | **4× TP4056 charger** | 🟡 | Single-cell side projects; emergency cell recovery | Your BMSes balance, so routine top-balancing isn't needed. Wrong tool for charging a 3S pack — that needs 12.6 V CC/CV |
+| 38 | **4× TP4056 charger** | 🟡 | Single-cell side projects; emergency cell recovery | Your BMSes balance, so routine top-balancing isn't needed. Wrong tool for a 3S pack — but see §11, the bench supply covers that |
 | 39 | **3× IP2721 USB-C PD module** | 🟡 | **Charging dock:** wall PD charger → IP2721 → 20 V → buck → 12.6 V CC/CV into the pack | These are PD **sinks**, not sources. No longer needed for main power now that the GPIO 5 V path is proven — the dock is their real job |
 
 ---
@@ -126,19 +126,67 @@ it out twice over. See PROJECT_PLAN §6.
 
 ---
 
-## 10. Not owned — see [SHOPPING_LIST.md](SHOPPING_LIST.md)
+## 11. Bench equipment
 
-Highest-impact gaps, in order:
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+| 50 | **KORAD KA3005D** bench supply, 0–30 V / 0–5 A linear | 🔵 | **Pack charging, bench powering, and current measurement** | Does three jobs a €10 charger cannot — see below |
+| 51 | **12 V fixed power supply** | 🔵 | Gentle routine charging | 12 V on a 3S pack is 4.0 V/cell ≈ 85% state of charge. That is not a limitation, it is the **longevity setting**: stopping at 4.0 V/cell roughly doubles Li-ion cycle life versus a full 4.2 V charge. Use this for day-to-day charging and the KORAD at 12.6 V only when you want maximum runtime |
 
-1. **12.6 V CC/CV charger** — you currently have no way to charge a 3S pack at all
-2. **TVS diode + bulk cap** — protects the Rock 5B on the unprotected GPIO power path, ~€1
-3. **2× TB6612FNG** — replaces the drivetrain's weakest link, ~€6
-4. Fuses, kill switch, XT30/XT60 connectors — safety basics
-5. **2D lidar** — back to essential. The €0 stereo path is dead (one CSI connector + mismatched
-   lenses), so this is now the main thing standing between wandering and navigating
-6. USB mic array + speaker — deferred by design; the phone app covers it until then
+### Why the KA3005D replaces a dedicated charger
+
+It **is** a CC/CV source, which is exactly what Li-ion charging is. Set 12.6 V, set the current
+limit, connect: it holds constant current until the pack reaches 12.6 V, then tapers. That is the
+entire algorithm.
+
+```
+   full charge      12.60 V,  limit 1.5 A   (~0.45C — easy on the cells)
+   storage/daily    12.00 V,  limit 1.5 A   (~85%, much longer pack life)
+   done when        current tapers to ~0.3 A  (C/10)
+```
+
+It also beats a fixed charger on things that matter here:
+
+- **Adjustable current limit** — charge at 0.5C or gentler, rather than whatever a cheap brick does.
+- **Live current readout** — you can *see* the CV taper and know when charging is actually finished.
+- **Adjustable voltage** — the storage-charge option above simply is not available on a 12.6 V brick.
+
+⚠️ **One real caveat: a bench supply has no termination logic.** A dedicated charger cuts off; the
+KORAD will sit at 12.6 V indefinitely, trickling. Holding Li-ion at full charge for days accelerates
+ageing. Disconnect when the current tapers — don't leave it connected overnight. Also disconnect
+before switching the supply off, since some units can sink a little current when unpowered.
+
+Balancing is already handled: your 3S BMS boards balance (confirmed), so the pack self-corrects.
+
+### The other two jobs
+
+**Bench-powering the robot.** Set 5.1 V, current limit 5 A, feed the Rock 5B's GPIO header directly
+and develop with no battery in the loop at all. Removes a whole class of "is this a software bug or
+a brownout?" confusion during Phases 0–3.
+
+**Measuring the power budget empirically.** The figures in [PROJECT_PLAN.md](PROJECT_PLAN.md) §4.3
+are estimates. With this supply you can read actual draw at idle, under NPU load, and during motor
+stalls — and replace the estimates with measurements. Worth doing before sizing anything else around
+them.
 
 ---
 
-*Inventory as of 2026-08-03, rev 2 (post hardware verification). See
+## 12. Not owned — see [SHOPPING_LIST.md](SHOPPING_LIST.md)
+
+Highest-impact gaps, in order:
+
+1. **TVS diode + bulk cap** — protects the Rock 5B on the unprotected GPIO power path, ~€1
+2. **2× TB6612FNG** — replaces the drivetrain's weakest link, ~€6
+3. Fuses, kill switch, XT30/XT60 connectors — safety basics
+4. **2D lidar** — back to essential. The €0 stereo path is dead (one CSI connector + mismatched
+   lenses), so this is now the main thing standing between wandering and navigating
+5. USB mic array + speaker — deferred by design; the phone app covers it until then
+
+**No longer needed** — a 12.6 V charger was previously listed here. The KORAD bench supply (§11)
+does the job better, so it has been removed rather than downgraded.
+
+---
+
+*Inventory as of 2026-08-04, rev 3. Corrections so far: ESP32 classic throughout (no S3); one CSI
+connector, not two; host is Radxa Debian 12; charging is covered by existing bench equipment. See
 [PROJECT_PLAN.md](PROJECT_PLAN.md) for architecture and [WIRING.md](WIRING.md) for pin assignments.*

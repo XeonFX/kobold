@@ -14,7 +14,6 @@ Small, cheap, and each one prevents a specific failure you're currently exposed 
 
 | Item | Qty | ~Price | Why |
 |---|---|---|---|
-| **12.6 V 2 A CC/CV charger** | 1 | €10 | **You have no way to charge a 3S pack.** Your BMSes balance and your TP4056s are single-cell. Nothing else on this list matters if the robot can't be recharged |
 | **TVS diode, 5.6–6.0 V** (SMBJ5.0A or similar) | 2 | €1 | Your GPIO power path bypasses the Rock 5B's input protection. If the XL4016's high-side switch fails short, 12.6 V lands on a €150 board. **Cheapest insurance in this document** |
 | **Low-ESR electrolytic, 1000 µF 16 V** | 4 | €3 | One at the Rock 5B header, one at each motor driver. Prevents brownout resets when motors stall |
 | **Blade fuse holders + fuses** (2/3/7.5/10 A) | 1 set | €5 | Non-optional on a lithium build |
@@ -78,6 +77,7 @@ container changes — same pipeline, different audio source.
 
 | Item | Why not |
 |---|---|
+| ~~12.6 V CC/CV charger~~ | **Resolved — you already have better.** The KORAD KA3005D bench supply *is* a CC/CV source, with an adjustable current limit and a live current readout a €10 charger does not give you. See COMPONENTS §11 |
 | ~~USB-C PD source module~~ | **Resolved** — your 5.1 V GPIO header path works. Just add the TVS |
 | ~~M.2 2242→2280 adapter~~ | **Resolved** — PM991 is 2280 |
 | ~~MHF4 antennas~~ | **Resolved** — the A8 shipped with them |
@@ -92,12 +92,13 @@ container changes — same pipeline, different audio source.
 
 ## If you buy exactly one thing
 
-The **12.6 V charger**. Everything else is an optimisation; without this the robot runs once.
+The **TVS diode**. Thirty cents, and it is the only thing standing between a shorted buck regulator
+and a dead Rock 5B on a power path that has no input protection.
 
 ## If you buy exactly five things
 
-Charger, **TVS diode**, **2× TB6612FNG**, fuses + kill switch, **lidar**. About €100, and it takes
-you from "works on the bench" to "navigates your room safely."
+**TVS diode**, **2× TB6612FNG**, fuses + kill switch, **bulk caps**, **lidar**. About €95, and it
+takes you from "works on the bench" to "navigates your room safely."
 
 ---
 
