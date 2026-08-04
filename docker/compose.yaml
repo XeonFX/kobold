@@ -94,6 +94,9 @@ services:
       # 2D accelerator. Without it the node silently falls back to CPU colour
       # conversion, which measured 32% of an A55 against RGA's ~1%.
       - /dev/rga:/dev/rga
+      # VPU. Hardware JPEG/H.264 encode for the video stream — 3.0% and 1.5%
+      # of a core respectively, against 6.8% and 70.4% in software.
+      - /dev/mpp_service:/dev/mpp_service
     group_add: ["video", "render"]
     cpuset: "0,1,2,3"
     profiles: [perception]

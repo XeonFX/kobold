@@ -104,11 +104,51 @@ RUN curl -fsSL -o /usr/lib/librga.so \
 # header — one wrong field gives silent corruption rather than an error. Two
 # pointer-and-int functions have no such failure mode.
 COPY ros2_ws/src/kobold_perception/rga/rga_shim.c /tmp/rga_shim.c
+
+# --------------------------------------------------------------------- MPP --
+# Hardware video encode. The vendor GStreamer plugin manages 0.9 fps for work
+# MPP itself does at 250-300 (stalls in poll_packet_locked), its upstream repo
+# is a 404, and Radxa ships no newer build — so talk to MPP directly.
+#
+# Measured, 1280x960, 60 distinct real frames, at the 12 fps camera rate:
+#     MJPEG  3.0% of a core, 5.61 Mbit/s
+#     H.264  1.5% of a core, 0.69 Mbit/s
+#     (software equivalents: jpegenc ~6.8%, x264enc 70.4%)
+# Pinned by URL and sha256 from Radxa's repo, not by adding the repo itself —
+# this image is Ubuntu 24.04 and that is a Debian 12 archive. Same approach as
+# librknnrt and librga: fetch a known artifact, verify it, move on.
+#
+# MPP is kernel-coupled (it talks to /dev/mpp_service), so this version must
+# stay compatible with the host driver, exactly like librknnrt. 1.5.0 is what
+# the robot runs.
+ARG LIBMPP_VER=1.5.0-1
+ARG LIBMPP_SHA256=6a00cd23eb8ac59bc0e338ad0f88d61757a16c95d183b2983c86535e2a0fd378
+ARG LIBMPP_DEV_SHA256=f0edadc4a295cbf7e08fd9f46bea5954d4a129e0efe309ebb3e7f1f267c861c0
+ARG LIBMPP_BASE=https://radxa-repo.github.io/rk3588-bookworm/pool/main/m/mpp
+RUN curl -fsSL -o /tmp/mpp.deb "${LIBMPP_BASE}/librockchip-mpp1_${LIBMPP_VER}_arm64.deb" \
+    && echo "${LIBMPP_SHA256}  /tmp/mpp.deb" | sha256sum -c - \
+    && curl -fsSL -o /tmp/mpp-dev.deb "${LIBMPP_BASE}/librockchip-mpp-dev_${LIBMPP_VER}_arm64.deb" \
+    && echo "${LIBMPP_DEV_SHA256}  /tmp/mpp-dev.deb" | sha256sum -c - \
+    && dpkg -x /tmp/mpp.deb /tmp/mppx && dpkg -x /tmp/mpp-dev.deb /tmp/mppx \
+    && cp -a /tmp/mppx/usr/lib/aarch64-linux-gnu/librockchip_mpp.so* /usr/lib/aarch64-linux-gnu/ \
+    && cp -a /tmp/mppx/usr/include/rockchip /usr/include/ \
+    && rm -rf /tmp/mpp.deb /tmp/mpp-dev.deb /tmp/mppx \
+    && ldconfig \
+    && echo "${LIBMPP_VER}" > /etc/kobold-libmpp-version
+
+COPY ros2_ws/src/kobold_perception/rga/mpp_enc_shim.c /tmp/mpp_enc_shim.c
+
+# Both shims built in one layer so the toolchain is installed and removed once.
+# NOTE: the toolchain is installed and LEFT INSTALLED. An earlier revision
+# purged it afterwards, which looked tidy and was wrong: `apt-get purge
+# libc6-dev && apt-get autoremove` cascades into ros-jazzy-rosidl-* and breaks
+# the ROS install. ~50 MB in a 2.4 GB image is not worth that risk.
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && gcc -O2 -fPIC -shared -o /usr/lib/libkobold_rga.so /tmp/rga_shim.c -lrga -lpthread \
-    && rm -f /tmp/rga_shim.c \
+    && gcc -O2 -fPIC -shared -o /usr/lib/libkobold_mppenc.so /tmp/mpp_enc_shim.c \
+         -lrockchip_mpp -lpthread \
+    && rm -f /tmp/rga_shim.c /tmp/mpp_enc_shim.c \
     && ldconfig \
-    && apt-get purge -y gcc libc6-dev && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 ENV RKNN_LIB=/usr/lib/librknnrt.so \
