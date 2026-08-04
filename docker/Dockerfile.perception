@@ -17,7 +17,7 @@
 # FROM the upstream ROS image, not from kobold-ros: the CI matrix builds all
 # services in PARALLEL, so depending on a sibling image is a race. Both start
 # from the same upstream layers, so the registry cache still shares most of it.
-FROM ros:jazzy-ros-base AS runtime
+FROM ros:jazzy-ros-base AS base
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
@@ -77,8 +77,27 @@ RUN PYTAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.vers
 ENV RKNN_LIB=/usr/lib/librknnrt.so \
     MODELS_DIR=/models
 
-# NOTE: the kobold_perception ROS package is Phase 4 and does not exist yet.
-# This image installs the runtime so the NPU path can be validated on hardware
-# now; the launch file lands with the package. Until then the service is
-# profile-gated in compose.yaml and is not started by a normal deploy.
-CMD ["bash", "-lc", "echo 'kobold-perception: runtime ready, application code lands in Phase 4' && sleep infinity"]
+# ------------------------------------------------------------------ build ----
+# This image previously shipped WITHOUT the ROS workspace, so
+# `ros2 launch kobold_perception camera.launch.py` -- which compose.yaml has
+# always asked for -- could only ever have failed with "package not found".
+FROM base AS build
+WORKDIR /ws
+COPY ros2_ws/src ./src
+RUN . /opt/ros/jazzy/setup.bash \
+    && colcon build --merge-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+# ---------------------------------------------------------------- runtime ----
+# Multi-stage: colcon and the compilers stay behind.
+FROM base AS runtime
+COPY --from=build /ws/install /ws/install
+
+# Prints the NPU version chain at startup so a driver/runtime mismatch is the
+# first line in the log rather than an inference failure that looks like model
+# corruption.
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV ROS_WS=/ws
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["ros2", "launch", "kobold_perception", "perception.launch.py"]
