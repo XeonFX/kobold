@@ -45,7 +45,6 @@ from .protocol_generated import (
     MSG_VERSION_REQ,
     PROTOCOL_VERSION,
     Ack,
-    CmdVel,
     Ranges,
     Telemetry,
     Version,
@@ -305,10 +304,10 @@ def main() -> int:
         tripped = False
         while True:
             time.sleep(0.2)
-            if args.cliff_after and not tripped:
-                if time.monotonic() - start > args.cliff_after:
-                    drive.trip_cliff()
-                    tripped = True
+            if (args.cliff_after and not tripped
+                    and time.monotonic() - start > args.cliff_after):
+                drive.trip_cliff()
+                tripped = True
     except KeyboardInterrupt:
         pass
     finally:

@@ -8,8 +8,8 @@ you change the framing, change it in both places and update the vectors.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Callable, Iterator, Optional
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 
 from .protocol_generated import DECODERS, MSG_NAMES, PROTOCOL_VERSION
 
@@ -124,7 +124,7 @@ class FrameDecoder:
     response is to count it and resynchronise, not to crash the bridge.
     """
 
-    def __init__(self, on_version_mismatch: Optional[Callable[[int], None]] = None):
+    def __init__(self, on_version_mismatch: Callable[[int], None] | None = None):
         self._buf = bytearray()
         self._overflow = False
         self.stats = LinkStats()
@@ -149,7 +149,7 @@ class FrameDecoder:
 
             self._buf.append(byte)
 
-    def _parse(self, encoded: bytes) -> Optional[Frame]:
+    def _parse(self, encoded: bytes) -> Frame | None:
         try:
             body = cobs_decode(encoded)
         except ValueError:

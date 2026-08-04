@@ -28,9 +28,11 @@ jobs:
       - run: pip install pytest pyserial ruff
       - name: Framing codec + bridge tests
         run: cd ros2_ws/src/kobold_bridge && python -m pytest test/ -v
+      # Blocking now that the tree is clean. It was continue-on-error, which
+      # meant 28 findings accumulated silently while every run still showed a
+      # green tick — the annotation was the only trace.
       - name: Lint
         run: ruff check tools/ ros2_ws/src/kobold_bridge/
-        continue-on-error: true
 
   firmware:
     name: Firmware build + native tests

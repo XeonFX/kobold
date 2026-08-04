@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import serial
 
@@ -22,7 +22,6 @@ from .protocol_generated import (
     BOARD_DRIVE,
     BOARD_HEAD,
     BOARD_SENSE,
-    MSG_NAMES,
     MSG_VERSION,
     MSG_VERSION_REQ,
     PROTOCOL_VERSION,
@@ -75,9 +74,9 @@ class SerialBoard:
         port: str,
         baud: int = 921600,
         name: str = "board",
-        on_frame: Optional[Callable[[Frame], None]] = None,
-        on_disconnect: Optional[Callable[[str], None]] = None,
-        expected_board: Optional[int] = None,
+        on_frame: Callable[[Frame], None] | None = None,
+        on_disconnect: Callable[[str], None] | None = None,
+        expected_board: int | None = None,
     ):
         self.port = port
         self.baud = baud
@@ -86,18 +85,18 @@ class SerialBoard:
         self._on_frame = on_frame
         self._on_disconnect = on_disconnect
 
-        self._serial: Optional[serial.Serial] = None
+        self._serial: serial.Serial | None = None
         self._decoder = FrameDecoder(on_version_mismatch=self._note_version_mismatch)
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._tx_lock = threading.Lock()
         self._seq = 0
 
-        self.version: Optional[Version] = None
+        self.version: Version | None = None
         self.version_ok = False
         self.last_rx_time = 0.0
         self._mismatch_logged = False
-        self._seen_version: Optional[int] = None
+        self._seen_version: int | None = None
 
     # ------------------------------------------------------------ lifecycle
 

@@ -11,7 +11,6 @@ bench.
 import random
 
 import pytest
-
 from kobold_bridge.link import (
     FrameDecoder,
     cobs_decode,
@@ -27,7 +26,6 @@ from kobold_bridge.protocol_generated import (
     CmdVel,
     Telemetry,
 )
-
 
 # ------------------------------------------------------------------ CRC16 --
 
@@ -196,4 +194,4 @@ def test_random_payloads_never_emit_interior_zero():
         payload = bytes(random.randint(0, 255) for _ in range(random.randint(0, 200)))
         wire = encode_frame(MSG_TELEMETRY, payload, seq=random.randint(0, 255))
         assert 0 not in wire[:-1], "interior zero would break framing"
-        assert list(FrameDecoder().feed(wire))[0].payload == payload
+        assert next(iter(FrameDecoder().feed(wire))).payload == payload

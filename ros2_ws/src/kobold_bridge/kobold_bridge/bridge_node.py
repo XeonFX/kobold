@@ -22,13 +22,17 @@ from __future__ import annotations
 
 import math
 import threading
-from typing import Optional
 
 import rclpy
-from geometry_msgs.msg import Quaternion, Twist, TwistWithCovariance
+from geometry_msgs.msg import Quaternion, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
 from sensor_msgs.msg import BatteryState, Imu, Range
 from std_msgs.msg import Bool, String
 
@@ -130,8 +134,8 @@ class KoboldBridge(Node):
 
         # ---- odometry integration state ----
         self._lock = threading.Lock()
-        self._prev_ticks: Optional[tuple] = None
-        self._prev_t_ms: Optional[int] = None
+        self._prev_ticks: tuple | None = None
+        self._prev_t_ms: int | None = None
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
@@ -254,14 +258,14 @@ class KoboldBridge(Node):
         elif frame.type == MSG_LOG:
             self._handle_log("sense", frame.decode())
 
-    def _handle_log(self, board: str, msg: Optional[Log]) -> None:
+    def _handle_log(self, board: str, msg: Log | None) -> None:
         if msg is None:
             return
         logger = self.get_logger()
         text = f"[{board}] {msg.text}"
         (logger.debug, logger.info, logger.warn, logger.error)[min(msg.level, 3)](text)
 
-    def _handle_telemetry(self, t: Optional[Telemetry]) -> None:
+    def _handle_telemetry(self, t: Telemetry | None) -> None:
         if t is None:
             return
         now = self.get_clock().now().to_msg()
@@ -384,7 +388,7 @@ class KoboldBridge(Node):
             Bool(data=bool(flags & (FAULT_CLIFF | FAULT_ESTOP | FAULT_CRITICAL_BATTERY)))
         )
 
-    def _handle_ranges(self, r: Optional[Ranges]) -> None:
+    def _handle_ranges(self, r: Ranges | None) -> None:
         if r is None:
             return
         now = self.get_clock().now().to_msg()
