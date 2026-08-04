@@ -74,12 +74,11 @@ jobs:
       contents: read
       packages: write
     strategy:
-      # Fail-fast off: knowing all four broke is more useful than knowing one did.
+      # Fail-fast off: knowing which of the six broke is more useful than
+      # stopping at the first one.
       fail-fast: false
       matrix:
         service: [ros, perception, llm, voice, app, agent]
-    outputs:
-      digests: ${{ steps.collect.outputs.digests }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -109,24 +108,16 @@ jobs:
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.path }}-${{ matrix.service }}:buildcache,mode=max
           provenance: false
 
-      - id: collect
-        run: echo "${{ matrix.service }}=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: digest-${{ matrix.service }}
-          path: /dev/null
-          if-no-files-found: ignore
-        continue-on-error: true
-
       - name: Record digest
         run: |
           mkdir -p digests
           echo "${{ steps.build.outputs.digest }}" > "digests/${{ matrix.service }}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: digests-${{ matrix.service }}
           path: digests/
+          if-no-files-found: error
 
   publish:
     needs: [images, firmware]
@@ -135,8 +126,20 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      # Download by pattern rather than everything. An unpatterned download
+      # pulls every artifact in the run and fails hard if any one of them is
+      # empty or malformed — which is how a stray placeholder upload took the
+      # whole publish step down.
       - uses: actions/download-artifact@v4
-        with: { path: artifacts }
+        with:
+          pattern: digests-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: artifacts/firmware
 
       - name: Build versions.env (digest-pinned)
         run: |
@@ -188,5 +191,5 @@ jobs:
         with:
           files: |
             deploy-manifest.yaml
-            artifacts/firmware/**/firmware.bin
+            artifacts/firmware/**/*.bin
           generate_release_notes: true
