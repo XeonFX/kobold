@@ -120,6 +120,62 @@ differential drive actually wants.
 
 Total: 15 of 16 safe pins + all 4 input-only. Tight but it fits.
 
+### 2.0 Running ONE TB6612FNG instead of two
+
+The pin map above works unchanged with a single driver. Nothing in the firmware
+knows or cares how many chips are behind those signals — it drives one PWM and
+one direction pair per *side*, and `STBY` to coast everything.
+
+| Two drivers (design target) | One driver (what you can build today) |
+|---|---|
+| 4 H-bridges, one per **motor** | 2 H-bridges, one per **side** |
+| Left pair split across driver #1 A+B | Left pair **paralleled** on channel A |
+| Right pair split across driver #2 A+B | Right pair **paralleled** on channel B |
+| 1.2 A continuous per motor | 1.2 A continuous per **side** |
+
+**Single-driver connections:**
+
+| ESP32 | TB6612FNG | Goes to |
+|---|---|---|
+| GPIO 4 | PWMA | — |
+| GPIO 5 / 16 | AIN1 / AIN2 | — |
+| GPIO 17 | PWMB | — |
+| GPIO 18 / 19 | BIN1 / BIN2 | — |
+| GPIO 23 | STBY | — |
+| — | AO1 / AO2 | **both left motors**, wired the same way round |
+| — | BO1 / BO2 | **both right motors** |
+| 3V3 | VCC | logic supply |
+| — | VM | 6.5 V motor rail |
+| GND | GND | must be common with the ESP32 |
+
+**The current trade.** TT gear motors draw roughly 150 mA free-running and
+700 mA–1 A stalled at 6 V. Two in parallel per channel:
+
+| | Per channel | Against 1.2 A continuous / 3.2 A peak |
+|---|---|---|
+| Free-running | ~300 mA | comfortable |
+| Normal driving | ~400–600 mA | comfortable |
+| **Both wheels on a side stalled** | **~1.4–2 A** | over continuous, under peak |
+
+So one chip is fine for everything except a sustained stall — a carpet edge, a
+jammed wheel, or driving into a wall and holding throttle. The TB6612FNG has
+proper thermal shutdown rather than the L293D's gradual fade, so it protects
+itself; you lose the motors until it cools. Add the second driver before
+sustained real-world driving, but do not wait for it to bring the drivetrain up.
+
+**Two mistakes that cost an afternoon:**
+
+- **STBY floating = motors permanently coasted.** It must be driven HIGH to
+  enable. The firmware owns GPIO 23 for exactly this (it is the software
+  e-stop), but an unconnected pin looks identical to a dead driver.
+- **VM and VCC are separate.** VM is the 6.5 V motor rail, VCC is 3.3 V logic.
+  Feeding VCC from the motor rail destroys the chip.
+
+And when paralleling two motors onto one channel, check polarity — one wired
+backwards makes that side fight itself, drawing near-stall current while barely
+moving.
+
+
 ### 2.1 Cliff sensors live here, not on the sense board
 
 You want to drive on a table. That makes cliff detection the highest-priority safety input in the
@@ -205,28 +261,53 @@ Also share a ground wire between the two boards alongside the safety line.
 
 ## 5. USB and device naming
 
-All three boards use USB-serial bridges, so everything is `/dev/ttyUSB*`.
+All boards use USB-serial bridges, so everything is `/dev/ttyUSB*`.
 
-| Device | Chip | Symlink |
+**Both ESP32s turned out to be CP2102 with the factory-default serial `0001`** —
+identical idVendor, idProduct *and* serial. An earlier version of this section
+claimed the USB-C board had a distinct CH9102 VID/PID; that was written before
+anything was plugged in and is simply wrong. There was nothing electrically
+unique to match on.
+
+Fixed by rewriting the CP2102 EEPROM serial on each board, so identity follows
+the **board** rather than the socket:
+
+```bash
+git clone https://github.com/DiUS/cp210x-cfg && cd cp210x-cfg && make
+sudo ./cp210x-cfg -l                              # find bus/dev
+sudo ./cp210x-cfg -d <bus>.<dev> -S KOBOLD-DRIVE
+sudo ./cp210x-cfg -d <bus>.<dev> -S KOBOLD-SENSE
+```
+
+Two traps: `-d` wants `n.n` despite the help text saying `bus:dev`, and the
+device re-enumerates mid-write, so the tool prints `No such device` read errors
+*after a successful write*. Verify with `cp210x-cfg -l`, not the exit code.
+
+| Device | Serial | Symlink |
 |---|---|---|
-| ESP32 drive (USB-C board) | CH9102 / CH343 — distinct VID/PID | `/dev/robot-drive` |
-| ESP32 sense | CP2102 or CH340 | `/dev/robot-sense` |
-| Lidar (if bought) | CP2102 | `/dev/robot-lidar` |
+| ESP32 drive | `KOBOLD-DRIVE` | `/dev/robot-drive` |
+| ESP32 sense | `KOBOLD-SENSE` | `/dev/robot-sense` |
+| ESP32 head (spare) | still factory `0001` | give it one before fitting |
 
 ```
 # /etc/udev/rules.d/99-kobold.rules
-# Drive board — identified by its distinct USB-C bridge chip
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", SYMLINK+="robot-drive"
-# Sense board — CH340 clones often share a serial, so match the physical port instead
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", KERNELS=="1-1.2", SYMLINK+="robot-sense"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="KOBOLD-DRIVE", SYMLINK+="robot-drive", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="KOBOLD-SENSE", SYMLINK+="robot-sense", MODE="0660", GROUP="dialout"
 ```
 
-⚠️ **CH340 clones frequently have no unique serial number.** If both boards share a VID/PID *and* a
-serial, you must match on the physical USB port path (`KERNELS==`) — which means always plugging
-each board into the same port. Label the ports on the Rock 5B with tape. This is exactly why the
-USB-C board (different chip → different VID/PID) should be the drive controller.
+Verified 2026-08-04: moving the sense board to a different USB *host controller*
+(bus 3 → bus 5) still produced `/dev/robot-sense`. Under the previous
+port-matching rules it would have matched nothing at all.
 
-Find the values with `udevadm info -a -n /dev/ttyUSB0 | head -40`.
+⚠️ **Do not write a bare `10c4:ea60` rule for a lidar.** An earlier revision did,
+and because the ESP32s use the same CP2102 bridge it grabbed them both —
+`/dev/robot-lidar` pointed at an ESP32 and the second board silently overwrote
+the first one's symlink. Match a lidar on its own serial.
+
+**Backstopped in software.** The firmware announces its board id in the version
+frame at boot, and `kobold_bridge` refuses to talk to a board whose id is not the
+one that port is meant to hold. Verified against real firmware — pointing the
+drive expectation at the sense port produces a refusal, not motor commands.
 
 ### Flashing over USB
 
