@@ -781,6 +781,88 @@ Framed binary, versioned, CRC-checked. Same format both directions, both boards.
 
 ## 8. Physical build notes
 
+### 8.1 Breadboard or solder? Both, in that order
+
+**Phase 1 — breadboard, for logic bring-up only.** IMU, encoders, cliff IR, the
+safety line. Everything in the build-order checklist up to step 7. Fast to
+change, and being able to move a wire in five seconds is worth a lot while you
+are still finding out what works.
+
+**Phase 2 — soldered, before the robot ever moves.** Vibration plus spring
+contacts produces intermittent faults that look exactly like software bugs.
+
+**Never on a breadboard: motor current, and the decoupling capacitors.**
+
+Two separate reasons, and the second is the one people miss:
+
+- A breadboard contact is **10–50 mΩ**, and it degrades with use. Two or three
+  contacts in the motor path at 2 A is a few hundred millivolts lost as heat, in
+  a spring you cannot inspect.
+- **A 100 nF on a breadboard is not a 100 nF.** Lead length plus two spring
+  contacts adds roughly 20–30 nH, which drags its self-resonance down from tens
+  of MHz to around 3 MHz. Above that it is an inductor. You added the ceramic
+  specifically to cover the frequencies the bulk cap cannot reach, and mounting
+  it this way puts it right back in the same band. It looks connected, measures
+  connected, and does nothing.
+
+### 8.2 Where each capacitor physically goes
+
+| Cap | Mount it | Lead length |
+|---|---|---|
+| 100 nF at MPU-6050 | **Directly across the module's VCC/GND pins**, on its underside | < 5 mm |
+| 1000 µF + 100 nF at TB6612 | On the carrier board, at the module's VM/GND header pins | 100 nF closest |
+| 100 µF + 100 nF at each ESP32 | Carrier board, at the VIN/GND header pins | ceramic closest |
+| 1000 µF + 100 nF + TVS at Rock 5B | Small adapter board on the GPIO header | as short as physically possible |
+
+The rule everywhere: **ceramic nearest the pins, electrolytic behind it.** If you
+have to choose which one gets the good position, the ceramic wins — the
+electrolytic still works from a few centimetres away, the ceramic does not.
+
+### 8.3 Carrier board layout
+
+Perfboard, not a custom PCB. Roughly 7 × 9 cm:
+
+```
+   ┌──────────────────────────────────────────────────┐
+   │  ┌────────────┐        ┌──────────────┐          │
+   │  │  ESP32     │        │  TB6612FNG   │          │
+   │  │  (female   │        │  (female     │  [screw  │
+   │  │   headers) │        │   headers)   │   term]  │◄─ 6.5 V in
+   │  │            │        │              │          │
+   │  └────────────┘        └──────────────┘  [screw  │
+   │    ▲                     ▲   ▲            term]  │◄─ motors out
+   │    │                     │   │                   │
+   │  100 µF               1000 µF                    │
+   │  + 100 nF             + 100 nF                   │
+   │  at VIN               at VM                      │
+   │                                                  │
+   │  [pin headers for sensors: encoders, cliff, IMU] │
+   └──────────────────────────────────────────────────┘
+```
+
+**Female headers for both modules**, so the ESP32 and the driver stay removable —
+you will damage one eventually, and desoldering a 30-pin module you cooked is a
+bad afternoon.
+
+**Screw terminals for anything carrying motor current.** Dupont connectors are
+crimped onto 26–28 AWG and rated around 0.5 A; they are for signals.
+
+### 8.4 Wire gauge — Dupont is not enough for power
+
+| Path | Current | Minimum |
+|---|---|---|
+| Pack → bucks | up to 8 A | **18 AWG** |
+| Motor rail → TB6612 VM | 2–4 A | **18 AWG** |
+| TB6612 → each motor | 0.5–1 A | **22 AWG** |
+| Buck → Rock 5B header | 4–5 A | **18 AWG**, both 5 V pins |
+| Logic 5 V → ESP32s | < 0.5 A | 24 AWG |
+| Every signal line | mA | 26–28 AWG (Dupont fine) |
+
+The docs already warn that 4 A through thin Dupont drops 300 mV easily. That is
+5.1 V at the buck arriving as 4.7 V at the Rock 5B — instability you will spend a
+day blaming on software.
+
+
 - **Solder before the robot moves.** Breadboard jumpers plus vibration produce intermittent faults
   that look exactly like software bugs and cost weekends.
 - **Cliff sensors mounted ahead of the wheels**, angled down, rigid. A sensor that flexes changes
