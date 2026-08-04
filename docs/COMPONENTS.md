@@ -16,6 +16,132 @@ Every part you own, what it does in this build, and what it's good for if it isn
 | 4 | **Raspberry Pi Zero 2W** — 512 MB RAM, 64 GB microSD | 🟡 | Second, dumber room node | Stream-only, no NPU. 512 MB won't run ROS 2 comfortably |
 | 5 | **Raspberry Pi 3** — 1 GB RAM | 🟡 | Dev / test / scratch box | Somewhere to try risky things that shouldn't touch the robot |
 
+### The RK3588 has four accelerators — use three of them
+
+Measured 2026-08-04. The NPU is the obvious one; the other three are easy to
+leave idle while the CPU does their work badly.
+
+| Unit | Job | Status |
+|---|---|---|
+| **NPU** (6 TOPS) | Neural nets | ✅ in use — YOLOv5s at 53 fps on **one of three cores** |
+| **RGA** | 2D: colour convert, scale, rotate, crop | ✅ in use — see below |
+| **VPU** (rkmpp) | H.264/H.265/JPEG encode + decode | ⚠️ works, but **not through GStreamer** — see below |
+| **GPU** (Mali-G610) | General FP parallel compute | ❌ deliberately unused |
+
+**The GPU is the wrong tool here, twice over.** The `panthor` driver provides
+Vulkan and OpenGL ES but **no OpenCL** — there is no ICD and no `libmali`, so
+GPU compute would mean swapping in ARM's proprietary blob and displacing Mesa.
+And even with OpenCL, the NPU wins on this workload: 6 TOPS INT8 against
+~450 GFLOPS FP16, at lower power. For quantised CNNs it is not close.
+
+#### RGA — worth using, ~29× cheaper than the CPU
+
+Colour conversion and scaling are exactly what the RGA exists for. Measured in
+the perception container against a real camera frame, 1280×960:
+
+| Operation | Wall | **CPU** |
+|---|---|---|
+| cv2 NV12→BGR | 1.00 ms | **7.73 ms** |
+| RGA NV12→BGR | 2.62 ms | **0.98 ms** |
+| cv2 NV12→BGR + letterbox | 3.82 ms | **20.28 ms** |
+| RGA NV12→BGR + letterbox | 2.08 ms | **0.69 ms** |
+
+**OpenCV's CPU time exceeds its wall time** — it is fast because it uses every
+core it can find. That is borrowed, not free: those cores run ASR at 2.8×
+real time and the LLM at 8 tok/s. The wall-clock difference is modest; the CPU
+difference is the point. In the live pipeline, GStreamer's `videoconvert`
+measured **37.9% of a core** against 5.4% raw — about 32% of an A55 reclaimed.
+
+Correctness was verified, not assumed: NV12→BGR differs from `cv2.cvtColor` by
+a mean of **0.38/255**, max 4. The letterbox differs by **1.00** on a real
+frame — but by **15.77** on random noise, which is a property of the test
+input, not the code. Noise has no spatial correlation, so any difference in
+interpolation kernel shows up everywhere. A synthetic benchmark would have
+rejected a perfectly good component.
+
+Implemented as a small C shim (`ros2_ws/src/kobold_perception/rga/rga_shim.c`)
+rather than raw ctypes: im2d passes `rga_buffer_t` **by value**, and replicating
+that struct in Python gives silent corruption when wrong rather than an error.
+Falls back to OpenCV automatically if `librga`, `/dev/rga` or the shim is
+missing.
+
+#### VPU — the hardware is excellent, the GStreamer plugin is broken
+
+Do not conclude the VPU is faulty. It is not:
+
+| Path | Throughput |
+|---|---|
+| **MPP directly** (`mpi_enc_test`) | **211 fps** JPEG, **320 fps** H.264 |
+| MPP via the GStreamer plugin | **0.9 fps** |
+
+The plugin is ~230× slower than the library it wraps. Everything else was
+ruled out one at a time:
+
+- Camera — `videotestsrc → mppjpegenc` fails identically at 0.9 fps
+- Buffer path — mmap, dmabuf, forced copy and `queue` all give 0.9 fps
+- RGA conversion inside the plugin — `GST_MPP_NO_RGA=1` changes nothing
+- Resolution — 640×480 is *slower* than 1280×960, so it is fixed per-frame
+  overhead, not bandwidth
+
+`GST_DEBUG=mpp*:5` shows the shape: **frame 0 encodes in 47 ms, frame 1 takes
+4,660 ms**, stalled in `gst_mpp_enc_poll_packet_locked` waiting for a packet MPP
+has already produced. That is a version mismatch —
+`gstreamer1.0-rockchip1` is **1.14-4** (GStreamer 1.14 era, ~2018) driving
+**MPP 1.5.0** on kernel 6.1. There are no V4L2 M2M encoder elements as an
+alternative path either.
+
+**Verified on a clean system, because a stray process had already caused one
+misdiagnosis earlier the same day.** After a fresh reboot with zero softirq
+load and nothing else run, the very first command was still 1.2 fps — and
+`mpi_enc_test` immediately after was 250 fps. The plugin is genuinely broken,
+not starved.
+
+**Decision: software MJPEG for streaming.** It saturates the camera anyway:
+
+| Encoder | fps | Bitrate | CPU |
+|---|---|---|---|
+| raw baseline | 11.9 | — | 3.0% |
+| **software MJPEG q80** | **11.9** | 5.65 Mbit/s | **9.8%** |
+| software H.264 `x264enc` ultrafast | 16.7 | **1.36 Mbit/s** | **70.4%** |
+| hardware `mppjpegenc` | 1.7 | — | broken |
+| hardware `mpph264enc` | 0.9 | — | broken |
+
+H.264 costs 10× the CPU to save 4× the bandwidth. On a robot where CPU is
+scarce and the network is a spare LAN, that is the wrong trade. End to end, a
+Python MJPEG server over `multipart/x-mixed-replace` delivered **12.9 fps at
+6.12 Mbit/s for 10.8% of a core** — full camera rate, so Python is not a
+bottleneck either and no rewrite is warranted.
+
+**When to revisit.** If bandwidth ever becomes the constraint — remote access
+over a WAN rather than a LAN — software H.264 at 70% of a core is unaffordable
+and the VPU becomes worth the effort. The route then is a **small C shim over
+MPP directly**, exactly like the RGA one, with `mpi_enc_test` as the reference
+implementation. Not the vendor GStreamer plugin, and not a newer build of it.
+
+#### Unexplained: a tasklet storm, once
+
+During the same session `ksoftirqd/0` was found burning **46% of a core** with
+**5.3 million tasklets/s, all on CPU0**, for over an hour. Load average sat at
+1.06 with nothing running.
+
+It was **not** present at boot, and could not be reproduced afterwards. Each of
+these was tested individually on a fresh boot and produced **0 tasklets/s**:
+
+- RGA conversion (the perception hot path)
+- camera capture
+- NPU inference
+- MPP encode, both directly and through GStreamer, including a 60 s run
+
+Stopping every userspace service — `rkaiq_3A`, `rknn_server`, Docker — changed
+nothing while it was happening, so it was kernel-side. Cause unidentified.
+
+**Why this is recorded rather than dismissed:** it is the one observation from
+that day with no explanation, and 46% of a core is not noise. If it recurs,
+capture `/proc/softirqs` per-CPU deltas and `/proc/interrupts` first — those are
+what localised it to CPU0 and ruled out an interrupt storm. The reassuring part
+is that nothing in the robot's actual hot path reproduces it.
+
+
 ---
 
 ## 2. Compute — microcontrollers
@@ -300,6 +426,54 @@ Confirmed end to end on the Rock 5B with the Radxa module:
 | 37 | **4× MT3608 boost, 2 A** | 🟡 | Spare. Not needed: every rail steps *down* from 3S | Useful if you ever want 12 V for something from a lower source |
 | 38 | **4× TP4056 charger** | 🟡 | Single-cell side projects; emergency cell recovery | Your BMSes balance, so routine top-balancing isn't needed. Wrong tool for a 3S pack — but see §11, the bench supply covers that |
 | 39 | **3× IP2721 USB-C PD module** | 🟡 | **Charging dock:** wall PD charger → IP2721 → 20 V → buck → 12.6 V CC/CV into the pack | These are PD **sinks**, not sources. No longer needed for main power now that the GPIO 5 V path is proven — the dock is their real job |
+
+### Measured draw, and the fuse it corrects
+
+Rock 5B on the buck via the GPIO header, measured 2026-08-04 with the bench
+supply:
+
+| State | Power | Current @ 5.1 V | Per header pin (2 in parallel) |
+|---|---|---|---|
+| Idle | 4.7 W | 0.92 A | 0.46 A |
+| CPU load | 12 W | 2.35 A | 1.18 A |
+| CPU + NPU | 14 W | 2.75 A | 1.37 A |
+| **Peak** | **18 W** | **3.53 A** | **1.77 A** |
+
+1.77 A per pin against a ~2–3 A rating is why **both** 5 V pins and at least
+four grounds are mandatory, not advisory. On one pin you would be at 3.5 A.
+
+**This makes the 10 A fuse on that branch wrong.** At 18 W out through a ~90%
+efficient buck the pack-side draw is about **1.8 A**; a 10 A fuse will never
+open on anything but a dead short. It still works with the TVS (a conducting
+TVS draws tens of amps and blows anything), but for a partial fault it is five
+times too loose. **Use T5A slow-blow** — slow-blow because the buck's input
+capacitors draw a real inrush spike that would nuisance-trip a fast 3 A.
+
+Runtime from these figures: ~22 W typical → **≈3.5 h**; ~46 W hard driving →
+**≈1.7 h**. Consistent with the ~2.5 h the plan assumed.
+
+### Stability under load — passed
+
+Staged burn-in on buck + header power, 2026-08-04. CPU ×8, then + NPU, then
++ memory and disk:
+
+```
+boot_id unchanged (no reset)   YES
+kernel complaints              none
+EXT4 / I/O errors              0
+peak SoC temperature           67.5 °C
+min A76 frequency under load   2352 MHz  (= max)
+min A55 frequency under load   1800 MHz  (= max)
+```
+
+**Minimum frequency equalled maximum frequency throughout.** If the buck were
+struggling the PMIC would pull clocks back long before anything reset — that
+mechanism never triggered. The fan engaged at 59 °C and held the SoC flat at
+66–67 °C against ~18 °C of headroom before RK3588 throttles.
+
+⚠️ **Still untested: the same burn-in *while the motors drive*.** Motor current
+sagging the shared pack is the failure mode that actually matters, and there
+are no motors yet. Today's result says the compute rail is solid on its own.
 
 ---
 
