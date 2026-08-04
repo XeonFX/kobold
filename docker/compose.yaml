@@ -1,0 +1,190 @@
+# Kobold robot stack.
+#
+#   Deploy:   scripts/deploy.sh <sha>     (never `docker compose up` by hand
+#                                          in production — you skip the gates)
+#   Rollback: scripts/rollback.sh
+#
+# Images are referenced by DIGEST via docker/versions.env, written by CI. Tags
+# move; digests do not. "What is running on the robot?" must have exactly one
+# answer, and that answer is a git SHA.
+#
+# ---------------------------------------------------------------------------
+# network_mode: host everywhere
+# ---------------------------------------------------------------------------
+# ROS 2 DDS discovery across bridged Docker networks is a long-running source of
+# misery. Host networking sidesteps it entirely. The trade: containers are NOT
+# network-isolated. That is acceptable — what we want here is dependency
+# isolation and versioned rollback, not a security boundary.
+
+name: kobold
+
+x-common: &common
+  restart: unless-stopped
+  network_mode: host
+  environment: &common-env
+    ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-42}"
+    RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+    KOBOLD_SHA: "${KOBOLD_SHA:-dev}"
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+
+  # ---------------------------------------------------------------- base ----
+  # URDF, TF tree, and the EKF that fuses wheel odometry with gyro yaw.
+  # Everything else assumes this is running.
+  base:
+    <<: *common
+    image: ${IMAGE_BASE:-ghcr.io/xeonfx/kobold-ros:dev}
+    container_name: kobold-base
+    command: ros2 launch kobold_bringup base.launch.py
+    volumes:
+      - ../ros2_ws/src/kobold_bringup/config:/config:ro
+      - /data/maps:/data/maps
+
+  # -------------------------------------------------------------- bridge ----
+  # The only container that touches the microcontrollers. Refuses to send a
+  # motor command if the firmware protocol version disagrees with this build.
+  bridge:
+    <<: *common
+    image: ${IMAGE_BASE:-ghcr.io/xeonfx/kobold-ros:dev}
+    container_name: kobold-bridge
+    command: ros2 run kobold_bridge bridge --ros-args --params-file /config/bridge.yaml
+    depends_on: [base]
+    volumes:
+      - ../ros2_ws/src/kobold_bringup/config:/config:ro
+    devices:
+      # udev-named, never ttyUSB0 — enumeration order changes between reboots
+      # and the failure mode is motor commands going to the ultrasonic board.
+      - /dev/robot-drive:/dev/robot-drive
+      - /dev/robot-sense:/dev/robot-sense
+    group_add: ["dialout"]
+
+  # ----------------------------------------------------------------- nav ----
+  nav:
+    <<: *common
+    image: ${IMAGE_NAV:-ghcr.io/xeonfx/kobold-nav:dev}
+    container_name: kobold-nav
+    command: ros2 launch kobold_bringup nav.launch.py
+    depends_on: [base, bridge]
+    volumes:
+      - ../ros2_ws/src/kobold_bringup/config:/config:ro
+      - /data/maps:/data/maps
+    profiles: [nav]          # Phase 5 — not started until the lidar arrives
+
+  # -------------------------------------------------------------- camera ----
+  camera:
+    <<: *common
+    image: ${IMAGE_PERCEPTION:-ghcr.io/xeonfx/kobold-perception:dev}
+    container_name: kobold-camera
+    command: ros2 launch kobold_perception camera.launch.py
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/dri:/dev/dri      # hardware H.264 encode via rkmpp
+    group_add: ["video", "render"]
+    profiles: [perception]
+
+  # ---------------------------------------------------------- perception ----
+  # YOLO + SigLIP + monocular depth. Pinned to NPU core 0 so the LLM can have
+  # cores 1-2; they will contend otherwise, and vision is the one that must
+  # stay realtime.
+  perception:
+    <<: *common
+    image: ${IMAGE_PERCEPTION:-ghcr.io/xeonfx/kobold-perception:dev}
+    container_name: kobold-perception
+    command: ros2 launch kobold_perception perception.launch.py
+    depends_on: [base]
+    environment:
+      <<: *common-env
+      RKNN_CORE_MASK: "1"
+    volumes:
+      - /data/models:/models:ro
+      - /data/targets:/data/targets
+    devices:
+      - /dev/dri:/dev/dri
+    group_add: ["render", "video"]
+    # A76 cluster — perception is the heavier of the two NPU consumers on CPU side.
+    cpuset: "4,5,6,7"
+    profiles: [perception]
+
+  # ----------------------------------------------------------------- llm ----
+  # OpenAI-compatible endpoint. Everything above it talks HTTP, which is why
+  # swapping Qwen3-VL for Qwen3.5 (or a cloud model) is a config change.
+  llm:
+    <<: *common
+    image: ${IMAGE_LLM:-ghcr.io/xeonfx/kobold-llm:dev}
+    container_name: kobold-llm
+    environment:
+      <<: *common-env
+      RKNN_CORE_MASK: "6"          # NPU cores 1 and 2
+      MODEL_PATH: /models/qwen3-vl-2b
+      MAX_CONTEXT: "4096"          # the KV cache is what eats RAM, not the weights
+    volumes:
+      - /data/models:/models:ro
+    devices:
+      - /dev/dri:/dev/dri
+    group_add: ["render"]
+    cpuset: "4,5,6,7"
+    profiles: [ai]
+
+  # --------------------------------------------------------------- voice ----
+  # Pinned to the A55 cluster. Audio underruns on a busy box are a real problem
+  # and this is far cheaper than adding a second SBC to avoid them.
+  voice:
+    <<: *common
+    image: ${IMAGE_VOICE:-ghcr.io/xeonfx/kobold-voice:dev}
+    container_name: kobold-voice
+    environment:
+      <<: *common-env
+      ASR_MODEL: /models/ggml-base.en-q5_0.bin
+      TTS_VOICE: /models/en_US-amy-medium.onnx
+    volumes:
+      - /data/models:/models:ro
+    cpuset: "0,1,2,3"
+    profiles: [ai]
+
+  # --------------------------------------------------------------- agent ----
+  agent:
+    <<: *common
+    image: ${IMAGE_AGENT:-ghcr.io/xeonfx/kobold-agent:dev}
+    container_name: kobold-agent
+    environment:
+      <<: *common-env
+      # Point this at the Odroid or a cloud model when you want a bigger brain;
+      # the robot falls back to the local 2B when offline.
+      LLM_BASE_URL: "${LLM_BASE_URL:-http://localhost:8080/v1}"
+    env_file:
+      - path: ../.env          # API keys — gitignored, never leaves the robot
+        required: false
+    volumes:
+      - ../agent/hermes:/config:ro
+      - /data/agent:/data/agent
+    depends_on: [llm]
+    profiles: [ai]
+
+  # ----------------------------------------------------------------- app ----
+  # Static files are BIND-MOUNTED from the git checkout, not baked into the
+  # image. UI changes deploy with `git checkout` and a browser refresh — no
+  # rebuild, no pull. That is the payoff for having no build step.
+  app:
+    <<: *common
+    image: ${IMAGE_APP:-ghcr.io/xeonfx/kobold-app:dev}
+    container_name: kobold-app
+    volumes:
+      - ../app/static:/app/static:ro
+      - /data/targets:/data/targets
+      - /data/deploy:/data/deploy:ro     # so the UI can show the running SHA
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # deploy status only
+    environment:
+      <<: *common-env
+      PORT: "8000"
+
+  # ------------------------------------------------------------- foxglove ----
+  foxglove:
+    <<: *common
+    image: ${IMAGE_BASE:-ghcr.io/xeonfx/kobold-ros:dev}
+    container_name: kobold-foxglove
+    command: ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+    depends_on: [base]
+    profiles: [debug]

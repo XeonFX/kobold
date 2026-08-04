@@ -1,0 +1,51 @@
+# ROS 2 base — bridge, base, foxglove all run from this image.
+#
+# The container is Ubuntu 24.04 because that is ROS 2 Jazzy's Tier 1 platform.
+# The HOST is Debian 12 with Radxa's BSP kernel, which is the correct kernel for
+# RK3588 (mainline has no usable NPU driver). This mismatch is exactly what
+# containers are for, and it is the strongest single argument for this design:
+# you were going to need a container regardless, so you may as well get version
+# pinning and rollback from it.
+FROM ros:jazzy-ros-base AS base
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+# apt work belongs in the base layer, not in the service images. This layer is
+# ~1.5 GB and the robot pulls it over home WiFi — keep it stable and rebuild it
+# rarely so later pulls are small layer deltas.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3-pip \
+      python3-serial \
+      ros-jazzy-rmw-cyclonedds-cpp \
+      ros-jazzy-robot-state-publisher \
+      ros-jazzy-robot-localization \
+      ros-jazzy-xacro \
+      ros-jazzy-tf2-ros \
+      ros-jazzy-foxglove-bridge \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------- build ----
+FROM base AS build
+WORKDIR /ws
+COPY ros2_ws/src ./src
+RUN . /opt/ros/jazzy/setup.bash \
+    && colcon build --merge-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+# --------------------------------------------------------------- runtime ----
+# Multi-stage: the build tools stay behind. Shipping colcon and a compiler to a
+# robot costs hundreds of MB of pull time for nothing.
+FROM base AS runtime
+COPY --from=build /ws/install /ws/install
+
+# Assert the NPU version chain at startup. A mismatch between the container's
+# runtime library and the host's kernel driver produces baffling failures at
+# inference time; this makes it the first line in the log instead.
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV ROS_WS=/ws
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["ros2", "launch", "kobold_bringup", "base.launch.py"]

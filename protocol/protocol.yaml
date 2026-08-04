@@ -1,0 +1,222 @@
+# Kobold serial protocol — single source of truth.
+#
+# Both the ESP32 firmware (C++) and the ROS 2 bridge (Python) are generated from
+# this file. Never hand-edit the generated files; run `make protocol` instead.
+#
+# Wire format (all little-endian):
+#
+#   [ COBS-encoded frame ][ 0x00 ]
+#
+#   frame = VER(u8) TYPE(u8) SEQ(u8) LEN(u8) PAYLOAD(0..255) CRC16(u16)
+#   CRC16/CCITT-FALSE over VER..PAYLOAD inclusive.
+#
+# COBS removes every 0x00 from the frame body, so a single 0x00 delimiter makes
+# resynchronisation after a dropped byte trivial: discard until the next 0x00.
+#
+# Bump `version` on ANY change to message ids or field layouts. The bridge
+# refuses to start against firmware reporting a different version — that check
+# is what makes remote firmware updates safe.
+
+version: 1
+
+# Board identifiers reported in the `version` message.
+boards:
+  drive: 1
+  sense: 2
+  head: 3
+
+# Fault bits — `flags` field of drive/telemetry and sense/status.
+faults:
+  none:            0x00
+  cliff:           0x01   # a downward IR sensor lost the surface
+  safety_line:     0x02   # sense board asserted the hardware safety line
+  watchdog:        0x04   # no cmd_vel within the timeout
+  low_battery:     0x08   # pack below the warning threshold
+  critical_battery: 0x10  # pack below the cutoff threshold — motors latched off
+  estop:           0x20   # commanded emergency stop
+  imu_error:       0x40
+  overcurrent:     0x80
+
+messages:
+
+  # ---------------------------------------------------------------- shared --
+
+  - name: ack
+    id: 0x00
+    dir: dev_to_host
+    doc: Acknowledges a host command. Unacked motor commands trip the watchdog.
+    fields:
+      - {name: acked_type, type: u8}
+      - {name: acked_seq,  type: u8}
+      - {name: result,     type: u8, doc: "0 = ok, non-zero = rejected"}
+
+  - name: version
+    id: 0x01
+    dir: dev_to_host
+    doc: Sent unprompted on boot and in reply to version_req.
+    fields:
+      - {name: protocol_version, type: u8}
+      - {name: board_id,         type: u8}
+      - {name: fw_major,         type: u8}
+      - {name: fw_minor,         type: u8}
+      - {name: fw_patch,         type: u8}
+      - {name: git_hash,         type: u32, doc: "First 4 bytes of the build commit"}
+
+  - name: version_req
+    id: 0x02
+    dir: host_to_dev
+    fields: []
+
+  - name: log
+    id: 0x03
+    dir: dev_to_host
+    doc: Human-readable diagnostics. Never used in a control path.
+    fields:
+      - {name: level, type: u8, doc: "0 debug, 1 info, 2 warn, 3 error"}
+      - {name: text,  type: str}
+
+  - name: ping
+    id: 0x04
+    dir: host_to_dev
+    fields:
+      - {name: nonce, type: u32}
+
+  # ----------------------------------------------------------- drive board --
+
+  - name: telemetry
+    id: 0x10
+    dir: dev_to_host
+    board: drive
+    rate_hz: 50
+    doc: >
+      Cumulative encoder counts, raw IMU, battery and fault state. Tick counts
+      are signed and wrap naturally; the bridge differences them. Direction is
+      applied on the firmware side from the commanded PWM sign, because the
+      LM393 encoders are single-channel and cannot sense it.
+    fields:
+      - {name: t_ms,        type: u32, doc: "Firmware uptime, milliseconds"}
+      - {name: ticks_fl,    type: i32}
+      - {name: ticks_fr,    type: i32}
+      - {name: ticks_rl,    type: i32}
+      - {name: ticks_rr,    type: i32}
+      - {name: gyro_x,      type: i16, doc: "Raw MPU-6050 counts"}
+      - {name: gyro_y,      type: i16}
+      - {name: gyro_z,      type: i16}
+      - {name: accel_x,     type: i16}
+      - {name: accel_y,     type: i16}
+      - {name: accel_z,     type: i16}
+      - {name: batt_mv,     type: u16}
+      - {name: cliff_mask,  type: u8, doc: "bit0 FL, bit1 FR, bit2 BL, bit3 BR — set = NO surface"}
+      - {name: flags,       type: u8, doc: "Fault bits"}
+      - {name: meas_l_mm_s, type: i16, doc: "Measured left-side wheel velocity"}
+      - {name: meas_r_mm_s, type: i16}
+
+  - name: cmd_vel
+    id: 0x11
+    dir: host_to_dev
+    board: drive
+    doc: >
+      Body-frame velocity command. The firmware stops the motors if no cmd_vel
+      arrives within CMD_VEL_TIMEOUT_MS — silence means stop, never "carry on".
+    fields:
+      - {name: linear_mm_s,   type: i16}
+      - {name: angular_mrad_s, type: i16}
+
+  - name: set_mode
+    id: 0x12
+    dir: host_to_dev
+    board: drive
+    doc: "Table mode caps speed hard and refuses to clear a cliff fault automatically."
+    fields:
+      - {name: mode,            type: u8, doc: "0 = floor, 1 = table"}
+      - {name: max_speed_mm_s,  type: u16}
+
+  - name: estop
+    id: 0x13
+    dir: host_to_dev
+    board: drive
+    fields:
+      - {name: engage, type: u8, doc: "1 = latch stopped, 0 = clear"}
+
+  - name: clear_fault
+    id: 0x14
+    dir: host_to_dev
+    board: drive
+    doc: "Clears latched faults. Refused while the triggering condition persists."
+    fields:
+      - {name: mask, type: u8}
+
+  - name: set_pid
+    id: 0x15
+    dir: host_to_dev
+    board: drive
+    doc: "Live tuning. Gains are ×1000 fixed-point to avoid floats on the wire."
+    fields:
+      - {name: kp_x1000, type: u16}
+      - {name: ki_x1000, type: u16}
+      - {name: kd_x1000, type: u16}
+
+  # ----------------------------------------------------------- sense board --
+
+  - name: ranges
+    id: 0x20
+    dir: dev_to_host
+    board: sense
+    rate_hz: 16
+    doc: >
+      Ultrasonic distances in millimetres. RANGE_NO_ECHO (0xFFFF) means no echo
+      returned — deliberately NOT zero, which downstream would read as an
+      obstacle touching the sensor.
+    fields:
+      - {name: t_ms,    type: u32}
+      - {name: front_mm, type: u16}
+      - {name: back_mm,  type: u16}
+      - {name: left_mm,  type: u16}
+      - {name: right_mm, type: u16}
+      - {name: ir_mask,  type: u8, doc: "bit0 front, bit1 back — set = obstacle detected"}
+      - {name: flags,    type: u8}
+
+  - name: buzzer
+    id: 0x21
+    dir: host_to_dev
+    board: sense
+    fields:
+      - {name: pattern, type: u8, doc: "0 off, 1 blip, 2 double, 3 alarm, 4 chirp"}
+      - {name: repeats, type: u8}
+
+  - name: display
+    id: 0x22
+    dir: host_to_dev
+    board: sense
+    fields:
+      - {name: line, type: u8}
+      - {name: text, type: str}
+
+  - name: set_thresholds
+    id: 0x23
+    dir: host_to_dev
+    board: sense
+    doc: "Distance at which the sense board asserts the hardware safety line."
+    fields:
+      - {name: danger_mm, type: u16}
+      - {name: warn_mm,   type: u16}
+
+  # ------------------------------------------------------------ head board --
+
+  - name: head_cmd
+    id: 0x30
+    dir: host_to_dev
+    board: head
+    fields:
+      - {name: pan_deg,  type: i16}
+      - {name: tilt_deg, type: i16}
+
+  - name: head_state
+    id: 0x31
+    dir: dev_to_host
+    board: head
+    rate_hz: 10
+    fields:
+      - {name: pan_deg,  type: i16}
+      - {name: tilt_deg, type: i16}
+      - {name: pir,      type: u8}

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  protocol:
+    name: Protocol bindings are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install pyyaml
+      # Fails if the committed generated files differ from what the spec
+      # produces — the generated bindings must never drift from protocol.yaml.
+      - run: make protocol-check
+
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install pytest pyserial ruff
+      - name: Framing codec + bridge tests
+        run: cd ros2_ws/src/kobold_bridge && python -m pytest test/ -v
+      - name: Lint
+        run: ruff check tools/ ros2_ws/src/kobold_bridge/
+        continue-on-error: true
+
+  firmware:
+    name: Firmware build + native tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+      - run: pip install platformio
+
+      # The codec is platform-independent on purpose: these run on the CI host,
+      # no ESP32 required, and catch framing bugs before they reach a robot.
+      - name: Native codec tests
+        run: cd firmware && pio test -e native
+
+      - name: Build drive + sense
+        run: cd firmware && pio run -e drive -e sense
+
+      - name: Publish firmware binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            firmware/.pio/build/drive/firmware.bin
+            firmware/.pio/build/sense/firmware.bin
+          if-no-files-found: error

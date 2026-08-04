@@ -1,0 +1,156 @@
+<?xml version="1.0"?>
+<!--
+  Kobold chassis description.
+
+  Dimensions are placeholders taken from the botland 4WD rectangular chassis.
+  MEASURE YOUR ROBOT and correct them: sensor positions here become the frames
+  that Nav2's costmap uses to decide where obstacles are, so a wrong offset puts
+  real obstacles in the wrong place on the map.
+
+  Frame convention is REP-103: x forward, y left, z up.
+-->
+<robot name="kobold" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ==== measure these ==== -->
+  <xacro:property name="base_length" value="0.200"/>
+  <xacro:property name="base_width"  value="0.150"/>
+  <xacro:property name="base_height" value="0.060"/>
+  <xacro:property name="wheel_radius" value="0.0325"/>
+  <xacro:property name="wheel_width"  value="0.026"/>
+  <xacro:property name="wheel_x"      value="0.075"/>
+  <xacro:property name="wheel_y"      value="0.085"/>
+  <xacro:property name="base_z"       value="0.045"/>
+
+  <material name="grey">  <color rgba="0.4 0.4 0.4 1.0"/></material>
+  <material name="black"> <color rgba="0.1 0.1 0.1 1.0"/></material>
+  <material name="orange"><color rgba="0.9 0.5 0.1 1.0"/></material>
+
+  <!-- base_footprint sits on the ground plane; Nav2 expects this. -->
+  <link name="base_footprint"/>
+
+  <link name="base_link">
+    <visual>
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="1.2"/>
+      <inertia ixx="0.005" ixy="0" ixz="0" iyy="0.008" iyz="0" izz="0.010"/>
+    </inertial>
+  </link>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${base_z}"/>
+  </joint>
+
+  <!-- ==== wheels ==== -->
+  <xacro:macro name="wheel" params="name x y">
+    <link name="${name}_wheel">
+      <visual>
+        <origin rpy="1.5708 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin rpy="1.5708 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="0.05"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+      </inertial>
+    </link>
+    <!--
+      Fixed rather than continuous: there is no joint state publisher for these.
+      The encoders are single-channel and cannot report wheel angle, only that a
+      slot passed, so an animated wheel would be fiction.
+    -->
+    <joint name="${name}_wheel_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${name}_wheel"/>
+      <origin xyz="${x} ${y} ${-base_z + wheel_radius}"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:wheel name="front_left"  x="${wheel_x}"  y="${wheel_y}"/>
+  <xacro:wheel name="front_right" x="${wheel_x}"  y="${-wheel_y}"/>
+  <xacro:wheel name="rear_left"   x="${-wheel_x}" y="${wheel_y}"/>
+  <xacro:wheel name="rear_right"  x="${-wheel_x}" y="${-wheel_y}"/>
+
+  <!-- ==== IMU ==== -->
+  <!-- Mount near the centre of rotation: gyro yaw is the load-bearing signal
+       for heading, and off-centre mounting couples linear accel into it. -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0.01"/>
+  </joint>
+
+  <!-- ==== ultrasonic ring ==== -->
+  <xacro:macro name="sonar" params="name x y yaw">
+    <link name="ultrasonic_${name}"/>
+    <joint name="ultrasonic_${name}_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="ultrasonic_${name}"/>
+      <origin xyz="${x} ${y} 0.02" rpy="0 0 ${yaw}"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:sonar name="front" x="${base_length/2}"  y="0" yaw="0"/>
+  <xacro:sonar name="back"  x="${-base_length/2}" y="0" yaw="3.14159"/>
+  <xacro:sonar name="left"  x="0" y="${base_width/2}"  yaw="1.5708"/>
+  <xacro:sonar name="right" x="0" y="${-base_width/2}" yaw="-1.5708"/>
+
+  <!-- ==== cliff sensors: four corners, facing DOWN ==== -->
+  <!-- Wired to the drive board, not the sense board: a table edge has a ~166 ms
+       deadline at 0.3 m/s and a round trip through the SBC does not fit. -->
+  <xacro:macro name="cliff" params="name x y">
+    <link name="cliff_${name}"/>
+    <joint name="cliff_${name}_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="cliff_${name}"/>
+      <origin xyz="${x} ${y} ${-base_height/2}" rpy="0 1.5708 0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:cliff name="front_left"  x="${base_length/2 - 0.01}"  y="${base_width/2 - 0.01}"/>
+  <xacro:cliff name="front_right" x="${base_length/2 - 0.01}"  y="${-base_width/2 + 0.01}"/>
+  <xacro:cliff name="back_left"   x="${-base_length/2 + 0.01}" y="${base_width/2 - 0.01}"/>
+  <xacro:cliff name="back_right"  x="${-base_length/2 + 0.01}" y="${-base_width/2 + 0.01}"/>
+
+  <!-- ==== camera on the pan/tilt head ==== -->
+  <link name="camera_link">
+    <visual>
+      <geometry><box size="0.01 0.03 0.02"/></geometry>
+      <material name="orange"/>
+    </visual>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="${base_length/2 - 0.02} 0 ${base_height/2 + 0.05}"/>
+  </joint>
+
+  <!-- Optical frame: REP-103 says z forward, x right, y down for cameras. -->
+  <link name="camera_optical_frame"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_frame"/>
+    <origin rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <!-- ==== lidar (Phase 5, if fitted) ==== -->
+  <link name="laser_frame"/>
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser_frame"/>
+    <origin xyz="0 0 ${base_height/2 + 0.03}"/>
+  </joint>
+
+</robot>

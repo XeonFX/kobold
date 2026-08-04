@@ -1,0 +1,26 @@
+kobold_bridge:
+  ros__parameters:
+    baud: 921600
+
+    # ---- MEASURE THESE ON YOUR ROBOT ----
+    # Wrong values here do not fail loudly; they quietly corrupt odometry and
+    # you will blame the EKF for days.
+    #
+    # mm_per_tick:   wheel circumference / encoder counts per revolution.
+    #                Count the slots on the disc. 65 mm wheel, 20 slots -> 10.21
+    # track_width_mm: NOT the physical wheel spacing. On a skid-steer chassis
+    #                the wheels scrub sideways, so this is an empirical fudge
+    #                factor. Command ten 360-degree turns, measure the actual
+    #                rotation, and scale until they agree.
+    mm_per_tick: 10.21
+    track_width_mm: 150.0
+
+    odom_frame: odom
+    base_frame: base_link
+
+    # The firmware stops the motors after 300 ms without a command. Repeating
+    # the last command well inside that window keeps a slow publisher from
+    # making the robot stutter.
+    cmd_vel_repeat_hz: 20.0
+
+    battery_cells: 3

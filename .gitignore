@@ -1,0 +1,63 @@
+# --- PlatformIO / firmware ---
+firmware/.pio/
+firmware/.vscode/
+*.elf
+*.bin.bak
+
+# --- ROS 2 ---
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- models ---
+# Model weights are large binaries fetched by checksum from models/manifest.yaml,
+# never committed. The manifest is the source of truth for which version is
+# deployed; the weights themselves live in the registry or on HuggingFace.
+models/*.rkllm
+models/*.rknn
+models/*.onnx
+models/*.bin
+models/*.gguf
+models/cache/
+
+# --- robot runtime data ---
+data/
+*.mcap
+*.bag
+maps/*.pgm
+maps/*.yaml
+!maps/.gitkeep
+
+# --- secrets / local config ---
+.env
+.env.*
+!.env.example
+docker/versions.local.env
+agent/hermes/config.local.yaml
+
+# --- local tool config ---
+# Personal Claude Code settings. The shared .claude/settings.json (if any) is
+# fine to commit; the .local. variant is per-machine.
+.claude/settings.local.json
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+!.vscode/extensions.json
+.pytest_cache/

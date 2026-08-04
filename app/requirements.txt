@@ -1,0 +1,11 @@
+# Kobold web app.
+#
+# Pinned, because an unpinned dependency that silently updates is the same class
+# of problem as an unpinned container image.
+
+fastapi==0.115.6
+# uvicorn[standard] rather than plain uvicorn: the extras pull in `websockets`.
+# Without it uvicorn starts fine, serves HTTP fine, and every WebSocket upgrade
+# fails — so telemetry, audio and teleop all break while the app looks healthy.
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20

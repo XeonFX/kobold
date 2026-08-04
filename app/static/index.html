@@ -1,0 +1,239 @@
+<!doctype html>
+<!--
+  Kobold control app.
+
+  No build step, no Node, no bundler. Plain ES modules plus Alpine for
+  declarative binding. Static files are bind-mounted from the git checkout, so
+  a UI change deploys with `git checkout` and a browser refresh.
+
+  Layout is mobile-first in the literal sense: navigation lives at the BOTTOM
+  because this is held one-handed, and the e-stop sits above the fold on every
+  tab because you should never have to navigate to reach it.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#08090d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Kobold</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="stylesheet" href="/style.css">
+  <!-- Order matters: app.js must define the component before Alpine boots.
+       Both are classic deferred scripts, so they execute in document order. -->
+  <script defer src="/app.js"></script>
+  <script defer src="/vendor/alpine.min.js"></script>
+</head>
+
+<body x-data="kobold" x-init="start()" x-cloak>
+
+  <!-- ============================================================ hero -- -->
+  <header class="hero">
+    <div class="mark">🜛</div>
+
+    <div class="ident">
+      <b>kobold</b>
+      <div class="meta">
+        <span class="pulse" :class="{ live: linkLive }"></span>
+        <span x-text="linkLabel()"></span>
+        <span x-show="deploy.sha">·</span>
+        <span x-text="deploy.sha"></span>
+      </div>
+    </div>
+
+    <!-- Battery as a ring: legible at a glance without parsing digits. -->
+    <div class="battery" :class="batteryClass()" :title="robot.battery_v ? robot.battery_v.toFixed(2) + ' V' : ''">
+      <svg viewBox="0 0 44 44" width="44" height="44">
+        <circle class="track" cx="22" cy="22" r="18"></circle>
+        <circle class="fill" cx="22" cy="22" r="18"
+                :stroke-dasharray="113"
+                :stroke-dashoffset="113 - 113 * ((robot.battery_pct ?? 0) / 100)"></circle>
+      </svg>
+      <b x-text="robot.battery_pct !== null ? Math.round(robot.battery_pct) : '--'"></b>
+    </div>
+  </header>
+
+  <!-- =========================================================== e-stop -- -->
+  <button class="estop" :class="{ engaged: robot.estopped }" @click="toggleEstop()">
+    <span x-text="robot.estopped ? 'STOPPED' : 'STOP'"></span>
+    <small x-text="robot.estopped ? 'tap to release' : 'software stop — the kill switch is faster'"></small>
+  </button>
+
+  <div class="faults" x-show="hasFaults()" x-transition>
+    <b>⚠</b><span x-text="robot.faults"></span>
+  </div>
+
+  <main>
+
+    <!-- ============================================================ talk -- -->
+    <section x-show="tab === 'talk'">
+      <div class="card">
+        <div class="chat" x-ref="chat">
+          <template x-for="(m, i) in messages" :key="i">
+            <div class="bubble" :class="m.role" x-text="m.text"></div>
+          </template>
+
+          <div class="bubble robot thinking" x-show="thinking">
+            <i></i><i></i><i></i>
+          </div>
+
+          <div class="empty" x-show="!messages.length && !thinking">
+            <div class="glyph">◍</div>
+            <div>Hold to talk, or type below.</div>
+          </div>
+        </div>
+      </div>
+
+      <button class="ptt" :class="{ recording }"
+              @pointerdown.prevent="startTalking()" @pointerup="stopTalking()"
+              @pointercancel="stopTalking()" @pointerleave="stopTalking()">
+        <template x-if="!recording">
+          <span class="mic">🎙</span>
+        </template>
+        <template x-if="recording">
+          <div class="levels">
+            <template x-for="n in 9" :key="n">
+              <i :style="`--h:${levelFor(n)}px`"></i>
+            </template>
+          </div>
+        </template>
+        <span x-text="recording ? 'listening — release to send' : 'hold to talk'"></span>
+      </button>
+
+      <form class="composer" @submit.prevent="sendText()">
+        <input x-model="draft" placeholder="Ask the robot something…"
+               autocomplete="off" autocapitalize="sentences" enterkeyhint="send">
+        <button class="icon-btn" type="submit" :disabled="!draft.trim()">↑</button>
+      </form>
+    </section>
+
+    <!-- =========================================================== drive -- -->
+    <section x-show="tab === 'drive'">
+      <div class="viewport">
+        <img :src="videoSrc" alt="robot camera" x-show="!videoErr" @error="videoErr = true">
+        <div class="badge" x-show="!videoErr">LIVE</div>
+        <div class="offline" x-show="videoErr">
+          <div style="font-size:26px;opacity:.5">⃠</div>
+          <div>camera offline</div>
+        </div>
+      </div>
+
+      <!-- Proximity radar. Distances drawn spatially rather than listed as
+           four numbers, so you read the situation instead of decoding it. -->
+      <div class="card">
+        <header>
+          <span>proximity</span>
+          <span class="chip" :class="closestChip()" x-text="closestLabel()"></span>
+        </header>
+        <div class="radar-wrap">
+          <canvas x-ref="radar" class="radar"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <header><span>manual control</span></header>
+        <div class="stick-wrap">
+          <canvas x-ref="stick" class="stick"
+                  @pointerdown.prevent="stickDown($event)" @pointermove="stickMove($event)"
+                  @pointerup="stickUp()" @pointercancel="stickUp()" @pointerleave="stickUp()"></canvas>
+        </div>
+      </div>
+
+      <label class="switch">
+        <div class="label">
+          <b>Table mode</b>
+          <span>Caps speed to 0.15 m/s. The cliff sensors are the only thing between the robot and the floor.</span>
+        </div>
+        <input type="checkbox" :checked="robot.mode === 'table'" @change="setMode($event)">
+      </label>
+    </section>
+
+    <!-- ============================================================ find -- -->
+    <section x-show="tab === 'find'">
+      <div class="card">
+        <header><span>new target</span></header>
+
+        <label class="dropzone" :class="{ 'has-file': photoPicked }">
+          <input type="file" accept="image/*" capture="environment"
+                 x-ref="photo" @change="photoPicked = !!$event.target.files.length">
+          <div class="glyph" x-text="photoPicked ? '✓' : '＋'"></div>
+          <div x-text="photoPicked ? $refs.photo.files[0].name : 'Take or choose a photo'"></div>
+        </label>
+
+        <form class="composer" @submit.prevent="uploadTarget()">
+          <input x-model="targetLabel" placeholder="What is it? e.g. blue mug" autocomplete="off">
+          <button class="icon-btn" type="submit" :disabled="!photoPicked">↑</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <header>
+          <span>targets</span>
+          <span class="chip" x-text="targets.length"></span>
+        </header>
+
+        <div class="grid" x-show="targets.length">
+          <template x-for="t in targets" :key="t.id">
+            <figure class="tile" @click="findObject(t)">
+              <img :src="t.url" alt="" loading="lazy">
+              <figcaption x-text="prettyName(t.id)"></figcaption>
+            </figure>
+          </template>
+        </div>
+
+        <div class="empty" x-show="!targets.length">
+          <div class="glyph">⌕</div>
+          <div>No targets yet. Add a photo and tap it to send the robot looking.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================== system -- -->
+    <section x-show="tab === 'system'">
+      <div class="card">
+        <header>
+          <span>deployment</span>
+          <span class="chip" :class="update ? 'warn' : 'ok'" x-text="update ? 'update ready' : 'current'"></span>
+        </header>
+        <dl class="kv">
+          <div><dt>running</dt><dd x-text="deploy.sha"></dd></div>
+          <div><dt>deployed</dt><dd x-text="shortTime(deploy.deployed_at)"></dd></div>
+          <div><dt>previous</dt><dd x-text="deploy.previous || '—'"></dd></div>
+          <div x-show="update"><dt>available</dt><dd x-text="update"></dd></div>
+        </dl>
+      </div>
+
+      <div class="card">
+        <header><span>robot</span></header>
+        <dl class="kv">
+          <div><dt>link</dt><dd><span class="chip" :class="linkChip()" x-text="linkLabel()"></span></dd></div>
+          <div><dt>battery</dt><dd x-text="robot.battery_v ? robot.battery_v.toFixed(2) + ' V' : '—'"></dd></div>
+          <div><dt>faults</dt><dd x-text="robot.faults"></dd></div>
+          <div><dt>mode</dt><dd x-text="robot.mode"></dd></div>
+        </dl>
+      </div>
+
+      <p class="note">
+        Deploys are explicit: <code>make deploy SHA=…</code> from your machine.
+        Updates are detected hourly but never installed automatically — a 3 a.m.
+        pull that breaks the bridge while the robot is mid-room is a bad night.
+      </p>
+    </section>
+
+  </main>
+
+  <!-- ============================================================== nav -- -->
+  <nav>
+    <template x-for="t in tabs" :key="t.id">
+      <button :class="{ active: tab === t.id }" @click="tab = t.id; onTab(t.id)">
+        <span class="glyph" x-text="t.glyph"></span>
+        <span x-text="t.id"></span>
+      </button>
+    </template>
+  </nav>
+
+</body>
+</html>

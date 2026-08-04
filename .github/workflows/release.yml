@@ -1,0 +1,192 @@
+name: Release
+
+# Builds container images and firmware for one commit, publishes them, and emits
+# a manifest pinning exact digests. The robot consumes that manifest — never
+# `:latest`, never a moving tag.
+#
+# Runs on ubuntu-24.04-arm: native arm64, free for public repos. This matters a
+# lot — building ROS 2 images under QEMU emulation takes hours.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # Gate everything on the tests. Publishing an image whose firmware and bridge
+  # disagree about the wire protocol is how you brick a robot remotely.
+  test:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pyyaml pytest pyserial platformio
+
+      - name: Generated protocol bindings are current
+        run: make protocol-check
+
+      - name: Framing codec — Python
+        run: cd ros2_ws/src/kobold_bridge && python -m pytest test/ -q
+
+      - name: Framing codec — C++ (cross-language vectors)
+        run: cd firmware && pio test -e native
+
+  firmware:
+    needs: test
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      drive_sha: ${{ steps.hash.outputs.drive }}
+      sense_sha: ${{ steps.hash.outputs.sense }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # git_hash_flag.py needs real history
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio/.cache
+          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+      - run: pip install platformio
+
+      - name: Build drive + sense
+        run: cd firmware && pio run -e drive -e sense
+
+      - id: hash
+        run: |
+          echo "drive=$(sha256sum firmware/.pio/build/drive/firmware.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sense=$(sha256sum firmware/.pio/build/sense/firmware.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: firmware/.pio/build/*/firmware.bin
+          if-no-files-found: error
+
+  images:
+    needs: test
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # Fail-fast off: knowing all four broke is more useful than knowing one did.
+      fail-fast: false
+      matrix:
+        service: [ros, perception, llm, voice, app, agent]
+    outputs:
+      digests: ${{ steps.collect.outputs.digests }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR rejects uppercase in image names, and github.repository preserves
+      # the account's real casing (XeonFX/kobold). Without this every push fails
+      # with an opaque "invalid reference format".
+      - id: repo
+        run: echo "path=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.${{ matrix.service }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.path }}-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.path }}-${{ matrix.service }}:main
+          # Registry cache keeps the ~1.5 GB ROS base layer warm between runs.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.path }}-${{ matrix.service }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.path }}-${{ matrix.service }}:buildcache,mode=max
+          provenance: false
+
+      - id: collect
+        run: echo "${{ matrix.service }}=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.service }}
+          path: /dev/null
+          if-no-files-found: ignore
+        continue-on-error: true
+
+      - name: Record digest
+        run: |
+          mkdir -p digests
+          echo "${{ steps.build.outputs.digest }}" > "digests/${{ matrix.service }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.service }}
+          path: digests/
+
+  publish:
+    needs: [images, firmware]
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+
+      - name: Build versions.env (digest-pinned)
+        run: |
+          SHA_SHORT=$(git rev-parse --short=8 HEAD)
+          # Lowercased to match what was actually pushed — GHCR image names
+          # cannot contain uppercase.
+          REPO="${{ env.REGISTRY }}/${GITHUB_REPOSITORY,,}"
+          {
+            echo "# Generated by CI for ${SHA_SHORT} — do not edit by hand."
+            echo "# Images are pinned by DIGEST. Tags move; digests do not."
+            echo "KOBOLD_SHA=${SHA_SHORT}"
+            for svc in ros perception llm voice app agent; do
+              d=$(cat "artifacts/digests-${svc}/${svc}" 2>/dev/null || echo "")
+              key=$(echo "$svc" | tr '[:lower:]' '[:upper:]')
+              [ "$svc" = "ros" ] && key="BASE"
+              [ -n "$d" ] && echo "IMAGE_${key}=${REPO}-${svc}@${d}"
+            done
+          } > docker/versions.env
+          cat docker/versions.env
+
+      - name: Build deploy manifest
+        run: |
+          SHA_SHORT=$(git rev-parse --short=8 HEAD)
+          cat > deploy-manifest.yaml <<EOF
+          sha: ${SHA_SHORT}
+          built_at: $(date -Iseconds)
+          firmware:
+            drive: { sha256: "${{ needs.firmware.outputs.drive_sha }}" }
+            sense: { sha256: "${{ needs.firmware.outputs.sense_sha }}" }
+          requires:
+            rknpu_driver: "0.9.8"
+            librknnrt: "2.3.0"
+          EOF
+          cat deploy-manifest.yaml
+
+      # versions.env is committed back so the robot's `git checkout <sha>` picks
+      # up the exact digests for that commit. This is what makes one SHA equal
+      # one complete robot state.
+      - name: Commit versions.env
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docker/versions.env
+          git diff --staged --quiet || git commit -m "ci: pin image digests [skip ci]"
+          git push origin HEAD:main || echo "nothing to push"
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            deploy-manifest.yaml
+            artifacts/firmware/**/firmware.bin
+          generate_release_notes: true

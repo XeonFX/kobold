@@ -1,0 +1,122 @@
+# Model manifest — the single source of truth for what runs on the NPU.
+#
+#   make fetch-models     download + verify into /data/models
+#   make check-models      verify checksums of what is already there
+#
+# Models are NEVER committed to git and never baked into images. They are large,
+# they change on a different cadence from code, and burying a 2.7 GB blob in git
+# history is permanent. Swapping a model is a config change, not a deploy.
+#
+# ---------------------------------------------------------------------------
+# THE VERSION CHAIN — the thing that will actually bite you
+# ---------------------------------------------------------------------------
+# Three versions must agree, and only one of them lives in a container you
+# control. Containers assert these at startup so a mismatch is the first line in
+# the log rather than a baffling inference failure two hours later.
+#
+#   .rkllm file  <->  librkllmrt.so in the container  <->  rknpu kernel driver
+#
+# Values below are VERIFIED on the robot (2026-08-03, ROCK 5B):
+#   rknpu driver : v0.9.8   (sudo cat /sys/kernel/debug/rknpu/version)
+#   librknnrt    : 2.3.0    (/usr/lib/aarch64-linux-gnu/librknnrt.so.2.3.0)
+#   rknpu2 pkg   : 2.3.0-1
+#
+# v0.9.8 is the newest RKNPU driver that exists, and RKLLM requires >= 0.9.6,
+# so the driver is not a constraint. What constrains you is that the runtime
+# must match the file — and most published .rkllm files target older runtimes.
+
+host_requirements:
+  rknpu_driver: "0.9.8"
+  librknnrt: "2.3.0"
+
+models:
+
+  # --------------------------------------------------------------- language --
+  # Qwen3-VL-2B rather than Qwen3.5: RKLLM's toolkit supports Qwen3.5, but with
+  # no x86 machine you can only run what someone else has already converted, and
+  # no pre-converted Qwen3.5 .rkllm appears to be published. Qwen3-VL has working
+  # RK3588 deployments today. Swapping later is a base_url change and nothing else.
+  llm:
+    name: qwen3-vl-2b
+    version: w8a8-rkllm1.2.1
+    file: Qwen3-VL-2B_w8a8_rk3588.rkllm
+    # TODO: fill in once you pick a specific published conversion.
+    # Verify the runtime version in the filename matches librkllmrt below.
+    url: ""
+    sha256: ""
+    size_mb: 2200
+    rkllm_runtime: "1.2.1"
+    notes: >
+      Multimodal — handles both planning/chat and "is this the same object?"
+      verification. Cap context at 4096; the KV cache is what eats RAM, and the
+      262K window is irrelevant for a robot.
+
+  # ------------------------------------------------------------------ vision --
+  detector:
+    name: yolo11n
+    version: rknn2.3.0
+    file: yolo11n.rknn
+    url: ""
+    sha256: ""
+    size_mb: 12
+    rknn_runtime: "2.3.0"
+    notes: >
+      COCO 80 classes, which includes `cat` (class 15). This is the cat game's
+      real-time tracker and the region proposer for photo search. 20-30 Hz.
+
+  embedder:
+    name: siglip-base-patch16
+    version: rknn2.3.0
+    file: siglip_image_encoder.rknn
+    url: ""
+    sha256: ""
+    size_mb: 200
+    rknn_runtime: "2.3.0"
+    notes: >
+      Image encoder only, no text tower. Cosine similarity between your uploaded
+      reference photo and YOLO crops. This is what finds a SPECIFIC mug rather
+      than any mug — the 80 fixed COCO classes cannot do that.
+
+  depth:
+    name: depth-anything-v2-small
+    version: rknn2.3.0
+    file: depth_anything_v2_vits.rknn
+    url: ""
+    sha256: ""
+    size_mb: 100
+    rknn_runtime: "2.3.0"
+    notes: >
+      Relative monocular depth, scaled by wheel odometry, projected into the Nav2
+      costmap. Catches table tops and chair seats that a 2D lidar plane misses.
+      Replaced the stereo plan — the ROCK 5B has one CSI connector, not two.
+
+  # ------------------------------------------------------------------- voice --
+  # English-only. Polish fine-tunes are f16-only (q5 wrecks Polish transcription)
+  # and cost ~500 MB instead of ~60 MB. If you add Polish later, revisit the RAM
+  # budget in docs/PROJECT_PLAN.md section 7.1 first.
+  asr:
+    name: whisper-base.en
+    version: ggml-q5_0
+    file: ggml-base.en-q5_0.bin
+    url: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_0.bin
+    sha256: ""
+    size_mb: 60
+    notes: CPU only, pinned to the A55 cluster. ~3-4x realtime.
+
+  tts:
+    name: piper-en_US-amy-medium
+    version: "1.0"
+    file: en_US-amy-medium.onnx
+    url: https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx
+    sha256: ""
+    size_mb: 63
+    extra_files:
+      - en_US-amy-medium.onnx.json
+
+  vad:
+    name: silero-vad
+    version: "5.1"
+    file: silero_vad.onnx
+    url: https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+    sha256: ""
+    size_mb: 2

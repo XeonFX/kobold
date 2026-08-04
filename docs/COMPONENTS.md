@@ -1,0 +1,144 @@
+# Component Inventory
+
+Every part you own, what it does in this build, and what it's good for if it isn't used now.
+
+**Status legend:** 🟢 on the robot · 🔵 off-robot infrastructure · 🟡 reserve / future use · ⚪ shelved
+
+---
+
+## 1. Compute — single-board computers
+
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+| 1 | **Radxa Rock 5B** — RK3588S, 8 GB RAM, 64 GB eMMC, active cooling, free M.2 | 🟢 | **Robot brain.** ROS 2, perception, LLM, web app — all of it | 6 TOPS NPU is the whole reason this project is feasible. Only board you own supported by RKLLM/RKNN. OS on eMMC, Docker + models on NVMe |
+| 2 | **Odroid N2** — S922X, 4 GB RAM, 16 GB eMMC | 🔵 | **Home base station.** Docker registry, MQTT, rosbag archive, Foxglove, Grafana | Runs on mains 24/7. Good CPU, no useful NPU — infrastructure, not inference. Host the 2 TB NVMe here over USB 3 |
+| 3 | **Radxa Zero 3W** — RK3566, 2 GB RAM, 64 GB microSD, **MIPI CSI + ~1 TOPS NPU** | 🟡 | **Smart room node** — fixed camera + mic in a corner of the room | Better than first credited: it can run RKNN vision models on its own NPU and publish *detections* over MQTT instead of streaming raw video. Gives the robot a second viewpoint (finds the cat when the cat isn't in the robot's FOV) and a second listening point. ⚠️ **RKLLM does not support RK3566** — vision yes, LLM no. Also still a fine charging-dock controller |
+| 4 | **Raspberry Pi Zero 2W** — 512 MB RAM, 64 GB microSD | 🟡 | Second, dumber room node | Stream-only, no NPU. 512 MB won't run ROS 2 comfortably |
+| 5 | **Raspberry Pi 3** — 1 GB RAM | 🟡 | Dev / test / scratch box | Somewhere to try risky things that shouldn't touch the robot |
+
+---
+
+## 2. Compute — microcontrollers
+
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+**Correction:** all three are **ESP32 DevKit V1 (ESP-WROOM-32, 30-pin)** — there is no S3. One has
+USB-C with a different USB-serial controller. All enumerate as `/dev/ttyUSB*`.
+
+| 6 | **ESP32 DevKit V1 — USB-C variant** | 🟢 | **Drive controller.** Motors, per-side PID, 4 encoders, MPU6050, battery ADC, **4× cliff IR**, e-stop, watchdog | Chosen for this role because its different USB-serial chip has a **distinct VID/PID**, making the udev rule trivial — and CH340 clones often share serial numbers, so this is the difference between reliable device naming and sending motor commands to the wrong board |
+| 7 | **ESP32 DevKit V1 #2** | 🟢 | **Sensor hub.** 4× ultrasonic, 2× horizontal IR, buzzer, OLED, safety line | GPIO 34/35/36/39 are input-only — perfect for ultrasonic ECHO. Keeps µs-precision echo timing away from encoder interrupt storms |
+| 8 | **ESP32 DevKit V1 #3** | 🟡 | **Head unit** (Phase 5+): pan/tilt servos, PIR, second OLED. Also the **spare** | Don't populate until needed — an identical spare on the shelf beats a third USB cable |
+| 9 | **Genuino 101** — Intel Curie | ⚪ | **Shelved** | EOL since 2017. No modern toolchain, no ESP-IDF, no micro-ROS. Only distinguishing feature is onboard BLE + 6-axis IMU if you ever want a standalone wireless gadget. It *is* Arduino-Uno form factor, so it's the only board the HW-130 shield plugs into directly |
+
+---
+
+## 3. Storage
+
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+| 10 | **Samsung PM991 256 GB** M.2 NVMe **(2280 ✓)** | 🟢 | **Robot NVMe** — `/var/lib/docker`, models, maps, ring-buffer rosbag | Chosen for power, not capacity: DRAM-less OEM drive at ~2.5 W under load vs 6–7 W for the PM9A1. That's real battery minutes. 2280 confirmed — no adapter needed |
+| 11 | **Samsung PM9A1 2 TB** M.2 NVMe | 🔵 | **Archive** on the Odroid N2 via USB 3 enclosure: registry, rosbags, datasets, model versions | Far too power-hungry for a battery robot, and rosbags belong off-robot anyway |
+| 12 | **ADATA SX8200 Pro 512 GB** M.2 NVMe | 🟡 | Spare / desktop | SM2262EN controller — the hottest-running of the three. Poor fit for a sealed chassis |
+| 13 | **64 GB eMMC** (on Rock 5B) | 🟢 | Root filesystem | Keep the OS here: recoverable with a card reader if you brick it |
+| 14 | **2× Lexar Silver Plus 64 GB microSD** | 🟡 | OS for Zero 3W / Pi Zero 2W | In use if those boards get deployed |
+
+---
+
+## 4. Networking
+
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+| 15 | **Radxa Wireless A8** (RTL8852BE, M.2 E-key) | 🟢 | **Robot WiFi** — first choice | Vendor-validated for the Rock 5B, so it'll work out of the box. Antennas confirmed present ✓ |
+| 16 | **Intel AX210NGW** (M.2 E-key) | 🟡 | **WiFi upgrade path** | `iwlwifi` is mainline and rock-solid on ARM — swap this in if the RTL8852BE proves flaky under sustained load. Needs 2× MHF4 antennas (not included) |
+| 17 | **Cudy WU650 USB** (RTL8811cu) | 🟡 | Last-resort dongle / AP mode on a Pi | Needs an out-of-tree driver that breaks on kernel updates. Avoid on the robot |
+| 18 | Rock 5B onboard 2.5 GbE | 🟢 | Bench debugging, bulk transfers, initial setup | Your lifeline when WiFi misbehaves |
+
+---
+
+## 5. Cameras and vision
+
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+⚠️ **The ROCK 5B has ONE MIPI CSI connector** (plus one DSI) — the 5B**+** is the two-CSI variant.
+So only one of these goes on the robot, and the €0 stereo idea is dead: the single connector plus
+**visibly different lenses** (matched optics are what stereo triangulation actually requires) rules
+it out twice over. See PROJECT_PLAN §6.
+
+| 19 | **Radxa Camera 8M** (IMX219, larger lens) | 🟢 | **Robot camera** — 1280×720 @ 30 fps — *if it wins the FOV test* | **Measure before choosing:** photograph a ruler from exactly 1 m with each module and compare visible width. Wider FOV wins for the robot — you want to see the chair leg beside you, not read a book across the room |
+| 20 | **Arducam** (IMX219, small lens) | 🟢 | Robot camera *if it wins the FOV test*; otherwise the **Zero 3W room node** | Same sensor as #19 but different optics, which is precisely why they can't be a stereo pair |
+| 21 | **Radxa Camera 4K** (IMX415) | 🟡 | Spare — competes for the same single CSI slot | Heavier, worse rolling-shutter smear under motion, and 4K frames cost memory bandwidth the NPU wants. With only one CSI connector, this loses to a wide-FOV IMX219 |
+| 22 | **Intel Neural Compute Stick 2** (Myriad X) | ⚪ | **Shelved — do not spend time on this** | OpenVINO dropped Myriad X support after 2022.3, and ARM64 host support was never good. The RK3588's NPU is faster, better supported, and already in the robot |
+
+---
+
+## 6. Chassis and drivetrain
+
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+| 23 | **4WD rectangular chassis** ([botland 7289](https://botland.com.pl/podwozia-robotow/7289-chassis-rectangle-4wd-4-kolowe-podwozie-robota-z-napedem-5904422310127.html)) | 🟢 | The platform. Skid-steer 4WD | Skid steer means the wheels scrub sideways on every turn — encoder-derived heading is unreliable by design. Gyro fusion is mandatory, not optional |
+| 24 | **4× wheel encoders** — LM393 modules, VCC/GND/**D0**/A0 | 🟢 | Wheel velocity → linear odometry, per-side PID | 4-pin confirms **single-channel, no direction sensing** (inferred from PWM sign). ~20 slots/rev on a 65 mm wheel → **~10 mm per tick**, which is decent. **Power at 3.3 V** so D0 is ESP32-safe. Use D0 only; A0 is for diagnosing a dirty or misaligned disc |
+| 25 | **HW-130 motor shield** (2× L293D + 74HC595) | 🟡 | **Currently in use at 8 V** — works, but see note | The 8 V trick compensates for the L293D's ~2 V drop with brute force, and the extra current means *more* heat in the chip, not less. Thermal shutdown fades in gradually, so the robot goes sluggish before it stops — a confusing failure. **Heatsink it now**, and replace with TB6612FNGs (same wheel voltage at 6.5 V, a quarter of the waste, double the current headroom, no level shifters) |
+
+---
+
+## 7. Sensors
+
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+| 26 | **4× HC-SR04 ultrasonic** (F/B/L/R, mounted) | 🟢 | Primary obstacle ring, 2 cm–4 m, ~15° cone. On the **sense** board | ⚠️ **ECHO is a 5 V output** — level-shift or divide it, never straight into a GPIO. Defeated by glass and by soft/angled surfaces |
+| 27 | **4× IR Flying-Fish** (FL/FR/BL/BR, **facing DOWN**) | 🟢 | **Table-edge / cliff detection.** Wired to the **drive** board | The highest-priority safety input in the system, because you want to drive on tables. At 0.3 m/s you have ~166 ms from edge to wheel-off, and an SBC round trip is 50–200 ms — so these go straight to the drive MCU, which coasts the motors in under 1 ms. Calibrate the pots **on your actual table**: gloss reflects specularly, dark matte absorbs, both fool IR |
+| 28 | **2× IR Flying-Fish** (front + back, **horizontal**) | 🟢 | Close-range obstacle backstop, ~2–30 cm. On the **sense** board | Covers what ultrasonics miss: chair legs, sound-absorbing surfaces. ⚠️ **With all four corner sensors pointing down, the sides have no close-range coverage** — and skid steer sweeps sideways in every turn. Either turn slowly near obstacles or add 2 more modules (~€4) |
+| 29 | **MPU-6050** accel + gyro | 🟢 | **Gyro yaw for the odometry EKF** — the load-bearing heading source | Mount flat, near the centre of rotation, away from the motors. On a skid-steer platform this beats wheel-derived heading by a wide margin |
+| 30 | **PIR HC-SR501** | 🟡 | "Something moved, go look" trigger — **only while parked** | Useless in motion: ego-motion triggers it constantly. Nice low-power wake source for the cat game |
+| 31 | **NA27 load cell 2 kg + HX711** | 🟡 | Future: cargo tray ("did I pick it up?"), or a force bumper | No role in the core build. Fun once there's a payload |
+
+---
+
+## 8. Power
+
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+| 32 | **7× INR18650-35E** 3400 mAh | 🟢 | 2× 3S1P packs (6 cells) + 1 spare. ~77 Wh total → **~2.5 h usable runtime** | Good cells, ~8 A continuous — comfortably more than this robot draws |
+| 33 | **2× 3S 18650 enclosure** | 🟢 | Pack housing | |
+| 34 | **2× BMS 3S 20 A** | 🟢 | Per-pack protection **and balancing ✓** | Balancing confirmed — that removes the manual top-balancing chore entirely |
+| 35 | **2× HW-674 buck, 8 A** (XL4016) | 🟢 | **#1: Rock 5B @ 5.1 V into GPIO pins 2 & 4 (proven working).** #2: motor rail @ 6.5–8 V | The GPIO path works but bypasses the board's input protection — **add a 5.6–6.0 V TVS diode and a 1000 µF cap at the header.** If the XL4016's high-side switch fails short, full pack voltage lands on a €150 board. €0.30 of insurance |
+| 36 | **4× LM2596 HW-411 buck, 3 A** | 🟢 | 5 V logic rail; **separate** 5 V servo rail; spares | Keep servos on their own regulator — servo inrush browns out logic rails and produces bugs you'll chase for days |
+| 37 | **4× MT3608 boost, 2 A** | 🟡 | Spare. Not needed: every rail steps *down* from 3S | Useful if you ever want 12 V for something from a lower source |
+| 38 | **4× TP4056 charger** | 🟡 | Single-cell side projects; emergency cell recovery | Your BMSes balance, so routine top-balancing isn't needed. Wrong tool for charging a 3S pack — that needs 12.6 V CC/CV |
+| 39 | **3× IP2721 USB-C PD module** | 🟡 | **Charging dock:** wall PD charger → IP2721 → 20 V → buck → 12.6 V CC/CV into the pack | These are PD **sinks**, not sources. No longer needed for main power now that the GPIO 5 V path is proven — the dock is their real job |
+
+---
+
+## 9. Interface, logic, and passives
+
+| # | Component | Status | Role | Notes |
+|---|---|---|---|---|
+| 40 | **4× level converter** | 🟢 | HC-SR04 ECHO (5 V) → ESP32 (3.3 V) | Run the IR modules, encoders and MPU6050 at **3.3 V** instead and none of them need shifting — LM393 works down to 2 V and its output then swings 0–3.3 V. Only the HC-SR04s genuinely require 5 V |
+| 41 | **2× OLED 0.96" SSD1306** | 🟢 / 🟡 | Robot "face" and status display on the sense hub; second one for the head unit | I²C, shares the bus with the MPU6050. Cheap personality — worth doing |
+| 42 | **2× LCD 2×16 (HD44780)** | 🟡 | Spare / bench debugging | The OLEDs are better in every way for the robot. These are fine for a charging dock readout |
+| 43 | **4× buzzer** | 🟢 | Audible state changes, cat-game taunt, low-battery alarm | Keep the volume low — piezo resonance is unpleasant at feline hearing range |
+| 44 | **Servo Tower Pro SG90** | 🟡 | Camera **pan** (Phase 5) | Own 5 V rail. Sweeping the head is what makes `look_around()` and place recognition work |
+| 45 | **Servo Redox S90** | 🟡 | Camera **tilt** (Phase 5) | |
+| 46 | **NE555 pulse generator** | 🟡 | No planned role | The ESP32s generate every waveform this robot needs in software |
+| 47 | **10× NPN S9013 / 10× PNP A92** | 🟢 | Buzzer drive, LED drive, motor-rail kill MOSFET gate drive, level shifting | General-purpose glue |
+| 48 | **Resistors, capacitors, diodes** | 🟢 | Dividers (5 V ECHO, battery sense), pull-ups, bulk decoupling on the motor rail, flyback protection | Put generous bulk capacitance near the motor drivers — it's the cheapest fix for brownout-induced resets |
+| 49 | **Breadboards + jumper wires** | 🟢 | Prototyping | Move to soldered connections before the robot drives around. Vibration + breadboard = intermittent faults that look like software bugs |
+
+---
+
+## 10. Not owned — see [SHOPPING_LIST.md](SHOPPING_LIST.md)
+
+Highest-impact gaps, in order:
+
+1. **12.6 V CC/CV charger** — you currently have no way to charge a 3S pack at all
+2. **TVS diode + bulk cap** — protects the Rock 5B on the unprotected GPIO power path, ~€1
+3. **2× TB6612FNG** — replaces the drivetrain's weakest link, ~€6
+4. Fuses, kill switch, XT30/XT60 connectors — safety basics
+5. **2D lidar** — back to essential. The €0 stereo path is dead (one CSI connector + mismatched
+   lenses), so this is now the main thing standing between wandering and navigating
+6. USB mic array + speaker — deferred by design; the phone app covers it until then
+
+---
+
+*Inventory as of 2026-08-03, rev 2 (post hardware verification). See
+[PROJECT_PLAN.md](PROJECT_PLAN.md) for architecture and [WIRING.md](WIRING.md) for pin assignments.*

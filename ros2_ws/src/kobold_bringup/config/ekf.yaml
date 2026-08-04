@@ -1,0 +1,69 @@
+# robot_localization EKF — fuses wheel odometry with MPU-6050 gyro yaw.
+#
+# The central decision here: take linear velocity from the wheels and yaw rate
+# from the gyro, and take yaw from the wheels almost not at all.
+#
+# On a skid-steer chassis the wheels scrub sideways through every single turn
+# by design. Encoder-derived heading is therefore systematically wrong in a way
+# that gets worse the more you turn, while the gyro measures rotation directly.
+# Configuring this wrongly — trusting wheel yaw — produces a robot that thinks
+# it is pointing somewhere it is not, and no amount of downstream tuning fixes
+# that.
+
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true          # indoor floor robot: no roll, pitch, or z
+    publish_tf: true
+    print_diagnostics: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+
+    # ---- wheel odometry ----
+    # Take vx only. Not x/y (they are integrals of vx and would double count),
+    # and not yaw (see above).
+    odom0: wheel_odom
+    odom0_config: [false, false, false,     # x,    y,    z
+                   false, false, false,     # roll, pitch, yaw
+                   true,  false, false,     # vx,   vy,   vz     <- only vx
+                   false, false, false,     # vroll, vpitch, vyaw
+                   false, false, false]     # ax,   ay,   az
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # ---- IMU ----
+    # Yaw rate only. The MPU-6050 has no magnetometer, so absolute yaw would
+    # drift unboundedly; the rate is what is actually trustworthy. Linear
+    # acceleration is left out on purpose — double-integrating accelerometer
+    # noise on a vibrating chassis produces confident nonsense.
+    imu0: imu/data_raw
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,       # vyaw  <- only this
+                  false, false, false]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_queue_size: 20
+    imu0_remove_gravitational_acceleration: true
+
+    process_noise_covariance: [0.02, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0.02, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0.01, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0.01, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0.01, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0.03, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0.02,  0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0.02,  0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0.01, 0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.01]

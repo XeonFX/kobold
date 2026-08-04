@@ -1,0 +1,38 @@
+# Stable device names for the kobold MCU boards.
+#
+# Install:  sudo ./scripts/setup-udev.sh
+#
+# WHY THIS MATTERS: /dev/ttyUSB0 and /dev/ttyUSB1 swap between reboots depending
+# on enumeration order. The failure mode is sending motor commands to the
+# ultrasonic board, which is exactly as bad as it sounds.
+#
+# The drive board is deliberately the USB-C variant, because its USB-serial
+# bridge chip has a different VID/PID from the other two — which makes it
+# unambiguously identifiable. CH340 clones frequently share both a VID/PID AND a
+# serial number, so if both your remaining boards use CH340, match them on
+# physical USB port path instead (see the KERNELS example below) and always plug
+# each board into the same port. Label the ports with tape.
+#
+# Find your values:
+#   udevadm info -a -n /dev/ttyUSB0 | grep -E 'idVendor|idProduct|serial|KERNELS' | head
+#
+# Common bridge chips:
+#   1a86:7523  CH340        (most DevKit V1 clones)
+#   1a86:55d4  CH9102 / CH343 (many USB-C boards)
+#   10c4:ea60  CP2102       (Silicon Labs; usually has a real serial number)
+
+# ---- drive board: motors, encoders, IMU, cliff reflex ----
+# Preferred: match by unique serial number.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", SYMLINK+="robot-drive", MODE="0666", GROUP="dialout"
+
+# ---- sense board: ultrasonic, IR, buzzer, OLED, safety line ----
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="robot-sense", MODE="0666", GROUP="dialout"
+
+# ---- lidar (Phase 5, if fitted) ----
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="robot-lidar", MODE="0666", GROUP="dialout"
+
+# ---- fallback: identical boards with no distinguishing serial ----
+# Uncomment, replace the port paths with yours, and comment out the rules above.
+# Find the path with:  udevadm info -q path -n /dev/ttyUSB0
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", KERNELS=="1-1.2", SYMLINK+="robot-drive", MODE="0666"
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", KERNELS=="1-1.3", SYMLINK+="robot-sense", MODE="0666"
