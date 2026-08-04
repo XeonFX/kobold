@@ -1,6 +1,10 @@
 # --- PlatformIO / firmware ---
 firmware/.pio/
 firmware/.vscode/
+# Rollback copies written by scripts/flash.sh. Untracked, these made the tree
+# dirty the moment you flashed -- which stamped the firmware's DIRTY provenance
+# bit on every subsequent build and rendered it meaningless.
+.firmware-backup/
 *.elf
 *.bin.bak
 
