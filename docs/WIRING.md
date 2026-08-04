@@ -82,6 +82,121 @@ The failure mode you're looking for is a reboot when the motors stall, not stead
 
 ---
 
+### 1.2 Component orientation — get these wrong and you lose parts
+
+**Electrolytic capacitors** (1000 µF, 470 µF, 100 µF)
+
+```
+        ┌──────┐
+        │▓▓▓▓▓▓│ ◄── stripe / arrow marks the NEGATIVE lead
+        │▓▓▓▓▓▓│
+        └─┬──┬─┘
+          │  │
+        long short
+         (+)  (−)
+```
+
+The **stripe is negative**. On an untrimmed part the **longer leg is positive**.
+Reverse one and it heats, vents, and occasionally bursts — they are one of the
+few components that fail loudly.
+
+Voltage rating at least 1.5–2× the rail: **16 V** parts for the 5 V and 6.5 V
+rails, **25 V** if you ever put one directly on the 12.6 V pack.
+
+**TVS diode** (unidirectional, e.g. SMBJ6.0A)
+
+```
+                   +5.1 V rail
+                        │
+                     ───┴───
+                       ▲ │    ◄── BAND (cathode) faces the POSITIVE rail
+                     ──┴─┴──
+                        │
+                       GND
+```
+
+The **band goes to the positive rail**, the unbanded end to ground. It sits
+reverse-biased doing nothing until the rail rises past its breakdown voltage.
+
+Fitting it backwards makes it an ordinary forward-biased diode across your
+supply — a dead short that blows the fuse the instant you power up. Annoying,
+but it tells you immediately rather than silently leaving the board unprotected.
+
+**Be clear about what TVS + fuse actually buys you.** A 6.0 V TVS does not hold
+the rail at 6 V. Under a 12.6 V fault it clamps around 10 V while drawing tens of
+amps — and that current is what opens the fuse, in milliseconds. So the board
+sees roughly 10 V for a few milliseconds instead of 12.6 V indefinitely. That is
+damage *limitation*, not a guarantee. Proper protection is an OVP/eFuse IC; this
+is the €0.30 version and it is enormously better than nothing.
+
+**Ceramic 100 nF** — no polarity, fits either way. Always in *parallel* with the
+electrolytic and as close to the load pins as you can get it. The electrolytic
+handles bulk energy; the ceramic handles the fast edges the electrolytic's ESR
+cannot.
+
+---
+
+### 1.3 Where every capacitor and TVS goes
+
+```
+  3S PACK  9.0 – 12.6 V   (both BMS packs, common bank, single star ground)
+      │
+      ├──[10 A fuse]──► HW-674 #1 ──► 5.1 V ──────────────────┐
+      │                                                        │
+      │                        ┌───────────────────────────────┴────────┐
+      │                        │  AT THE ROCK 5B HEADER, not at the buck│
+      │                        │                                        │
+      │                        │   +5.1 V ─┬────────┬────────┬──► pin 2 │
+      │                        │           │        │        │    pin 4 │
+      │                        │        [TVS]   [1000 µF]  [100 nF]     │
+      │                        │        band↑    (+)↑       │           │
+      │                        │           │        │        │           │
+      │                        │   GND ────┴────────┴────────┴──► pins 6,9,│
+      │                        │                                  14,20,25 │
+      │                        └────────────────────────────────────────┘
+      │
+      ├──[7.5 A fuse]──[KILL SWITCH]──► HW-674 #2 ──► 6.5 V ──┐
+      │                                                        │
+      │                        ┌───────────────────────────────┴────────┐
+      │                        │  AT THE TB6612 VM PIN, not at the buck │
+      │                        │                                        │
+      │                        │   +6.5 V ─┬──────────┬──► TB6612 VM    │
+      │                        │           │          │                 │
+      │                        │      [1000 µF]   [100 nF]              │
+      │                        │        (+)↑         │                  │
+      │                        │           │          │                 │
+      │                        │   GND ────┴──────────┴──► TB6612 GND   │
+      │                        └────────────────────────────────────────┘
+      │
+      ├──[3 A fuse]────► LM2596 #1 ──► 5.0 V ──┬──[470 µF]──┬──► ESP32 drive VIN
+      │                                         │            ├──► ESP32 sense VIN
+      │                                         │            └──► OLED, lidar
+      │                                        GND
+      │
+      └──[2 A fuse]────► LM2596 #2 ──► 5.0 V ──┬──[470 µF]──┬──► servos (Phase 5)
+                                                │            │
+                                               GND          GND
+```
+
+**Why "at the load, not at the buck".** A capacitor works against the inductance
+of the wire between it and the thing it is feeding. Put the 1000 µF at the
+regulator output and 30 cm of Dupont wire later, the ESP32 or the Rock 5B sees
+almost none of its benefit. Same for the TVS: a fault clamped 30 cm away still
+arrives at the header as a spike.
+
+**Cap count for the whole robot:**
+
+| Where | Part | Why |
+|---|---|---|
+| Rock 5B header | 1000 µF/16 V + 100 nF + **TVS 6.0 V** | Rides out motor sag; TVS+fuse limits a buck failure |
+| TB6612 VM pin | 1000 µF/16 V + 100 nF | Direction reversal dumps current back into the rail |
+| LM2596 logic rail | 470 µF/16 V | Shared by both ESP32s |
+| LM2596 servo rail | 470 µF/16 V | Servo inrush, kept off the logic rail deliberately |
+| Each ESP32 VIN | 100 µF + 100 nF | Local reservoir; cheap insurance against brownout resets |
+| MPU-6050 VCC | 100 nF | It sits on the noisiest bus on the robot |
+
+---
+
 ## 2. ESP32 #1 (USB-C board) — drive controller
 
 Motors, encoders, IMU, **cliff sensors**, battery. 100–200 Hz hard real-time.
@@ -207,6 +322,157 @@ IR modules (~€4) for left/right horizontal.
 
 ---
 
+### 2.2 Drive board — complete schematic
+
+Six independent blocks. Build and test them in this order: **IMU → encoders →
+cliff → battery sense → safety line → motors.** Everything except the motors is
+verifiable with nothing but a USB cable.
+
+#### 2.2.1 Motors — one TB6612FNG
+
+```
+   6.5 V motor rail ──┬──[1000 µF]──┬──► VM ─┐
+                      │    (+)↑     │        │
+                      │             │        │   TB6612FNG
+                      │          [100 nF]    │  ┌──────────────┐
+                     GND ───────────┴────────┼──┤ GND      AO1 ├──► LEFT motors (both)
+                                             └──┤ VM       AO2 ├──►   parallel, same polarity
+   ESP32 3V3 ────────────────────────────────┬──┤ VCC          │
+                                             │  │          BO1 ├──► RIGHT motors (both)
+   ESP32 GPIO 4  ────────────────────────────┼──┤ PWMA     BO2 ├──►   parallel, same polarity
+   ESP32 GPIO 5  ────────────────────────────┼──┤ AIN1         │
+   ESP32 GPIO 16 ────────────────────────────┼──┤ AIN2         │
+   ESP32 GPIO 17 ────────────────────────────┼──┤ PWMB         │
+   ESP32 GPIO 18 ────────────────────────────┼──┤ BIN1         │
+   ESP32 GPIO 19 ────────────────────────────┼──┤ BIN2         │
+   ESP32 GPIO 23 ────────────────────────────┼──┤ STBY         │
+   ESP32 GND ────────────────────────────────┴──┤ GND          │
+                                                └──────────────┘
+```
+
+- **VM is 6.5 V, VCC is 3.3 V. They are not interchangeable** — VCC on the motor
+  rail destroys the chip.
+- **STBY floating = motors permanently coasted.** It must be driven HIGH to
+  enable, and an unconnected pin is indistinguishable from a dead driver. This is
+  the single most common "nothing happens and I've checked everything".
+- Grounds must be **common** between the ESP32, the driver and the motor rail.
+- Paralleling two motors per channel: **check polarity**. One backwards makes
+  that side fight itself, drawing near-stall current while barely moving.
+
+#### 2.2.2 Encoders — 4× LM393, powered at 3.3 V
+
+```
+   ESP32 3V3 ──┬──► VCC ─┐
+               │         │  LM393 module
+               │         │ ┌─────────┐
+              GND ───────┼─┤ GND  D0 ├──► ESP32 GPIO 34  (front-left)
+                         └─┤ VCC  A0 ├──   leave unconnected
+                           └─────────┘
+                                          GPIO 35  front-right
+                                          GPIO 36  rear-left
+                                          GPIO 39  rear-right
+```
+
+**Power them from 3.3 V, not 5 V.** D0 swings to whatever VCC is, and GPIO 34–39
+have no clamping diodes — 5 V on those pins damages the ESP32. This is the one
+place on this board where getting the supply wrong is destructive rather than
+merely wrong.
+
+A0 is the analogue output; useful only for diagnosing a dirty or misaligned
+slotted disc. Leave it off.
+
+#### 2.2.3 Cliff sensors — 4× IR, facing DOWN at the corners
+
+```
+   ESP32 3V3 ──┬──► VCC ─┐
+               │         │  IR Flying-Fish
+              GND ───────┼─┤ GND  OUT ├──► ESP32 GPIO 13  (front-left)
+                         └─┤ VCC      │                14  front-right
+                           └──────────┘                25  rear-left
+                                                       26  rear-right
+```
+
+Also 3.3 V, same reasoning. Calibrate the pots **on the actual table you intend
+to drive on** — gloss reflects specularly, dark matte absorbs, and both fool IR
+in opposite directions.
+
+#### 2.2.4 IMU — MPU-6050
+
+```
+                       MPU-6050 (GY-521)
+                      ┌──────────────┐
+   ESP32 3V3 ──┬──────┤ VCC      INT ├──  unused
+               │      │              │
+          [100 nF]    │ GND          ├──┬── ESP32 GND
+               │      │              │  │
+              GND ────┤              │  │
+                      │ SDA          ├──┼──► ESP32 GPIO 21
+                      │ SCL          ├──┼──► ESP32 GPIO 22
+                      │ AD0          ├──┘   tie LOW → address 0x68
+                      └──────────────┘
+```
+
+**AD0 decides the address.** Low = 0x68, which is what the firmware expects. Tie
+it high and the chip answers at 0x69, `WHO_AM_I` fails, and you get
+`MPU-6050 not responding` with everything apparently wired correctly. Most
+GY-521 boards already pull AD0 low, so leaving it unconnected usually works —
+but tying it to GND removes the doubt.
+
+Mount it **flat, near the centre of rotation, away from the motors.**
+
+#### 2.2.5 Battery sense — resistor divider into ADC1
+
+```
+   3S pack + (12.6 V max)
+        │
+      [47 kΩ]
+        │
+        ├──────────► ESP32 GPIO 32   (ADC1)
+        │
+      [10 kΩ]
+        │
+       GND  (common with pack ground)
+```
+
+12.6 V × 10/(47+10) = **2.21 V** at full charge, inside ADC1's range.
+
+Use **ADC1 only** — ADC2 is unavailable whenever WiFi is active, and that failure
+looks like a battery reading that works on the bench and dies in the field.
+Calibrate against a multimeter; the ESP32 ADC is noticeably nonlinear near both
+rails.
+
+#### 2.2.6 Hardware safety line — from the sense board
+
+```
+   sense GPIO 25 ──────────wire──────────► drive GPIO 27
+   sense GND     ──────────wire──────────► drive GND      ◄── run BOTH wires
+```
+
+The ground wire is not optional. A logic signal between two boards with only a
+power-supply ground in common is a signal referenced to whatever the motor
+current is doing to that ground at the time.
+
+**Polarity, as implemented:** the sense board drives the line LOW to assert
+danger and *releases it to high-impedance* to clear. The drive board holds
+`INPUT_PULLUP` with a falling-edge interrupt, so the pull-up defines idle. That
+choice is deliberate — it means two boards can never fight over the line, and a
+sense board mid-reboot cannot hold the drive board stopped.
+
+⚠️ **The consequence is that this line fails OPEN.** A broken wire, a pulled
+connector, or a dead sense board all read as "no danger", and the hardware e-stop
+is silently gone. Nothing above the MCUs will catch it either — the bridge would
+notice the sense board vanish, but going through the SBC is exactly what this
+wire exists to avoid.
+
+Check continuity when you build it, and treat this as a known limitation. The
+cheap fix, when the sense firmware next gets attention, is a **heartbeat**: have
+the sense board toggle the line at a few Hz while safe rather than idling, and
+have the drive board fault if the transitions stop. Same single wire, same
+sub-millisecond assert path, but a cut wire becomes detectable instead of
+invisible.
+
+---
+
 ## 3. ESP32 #2 — sensor hub
 
 Ultrasonics, horizontal IR, buzzer, OLED. 20–50 Hz.
@@ -233,6 +499,141 @@ Ultrasonics, horizontal IR, buzzer, OLED. 20–50 Hz.
 - Publish "no echo" as `+inf`, **never `0`** — a zero reads downstream as "obstacle touching the
   sensor" and hard-stops the robot for no reason.
 - Assert SAFETY_OUT on any range below the danger threshold (§4).
+
+---
+
+### 3.1 Sense board — complete schematic
+
+#### 3.1.1 Ultrasonics — 4× HC-SR04, and the one that bites
+
+HC-SR04 needs **5 V** to work reliably, and its ECHO pin therefore swings to 5 V.
+GPIO 34–39 have no clamping diodes. **ECHO must be divided down or level-shifted
+— never wired directly.**
+
+```
+   5 V logic rail ──────► VCC ─┐
+                               │   HC-SR04
+                               │  ┌──────────┐
+   ESP32 GPIO 23 ──────────────┼──┤ TRIG     │      (all four TRIG tied together)
+                               │  │          │
+                               └──┤ VCC ECHO ├──┐
+                     GND ─────────┤ GND      │  │
+                                  └──────────┘  │
+                                                │
+                                  ┌─────────────┘
+                                  │
+                               [10 kΩ]
+                                  │
+                                  ├──────────► ESP32 GPIO 34   (front)
+                                  │
+                               [20 kΩ]
+                                  │
+                                 GND
+```
+
+5 V × 20/(10+20) = **3.33 V**. One divider per sensor — four dividers total.
+
+| Sensor | ECHO → |
+|---|---|
+| Front | GPIO 34 |
+| Back | GPIO 35 |
+| Left | GPIO 36 |
+| Right | GPIO 39 |
+
+TRIG is 5 V-tolerant as an input on the HC-SR04 and 3.3 V drives it fine, so all
+four TRIG pins share **GPIO 23** directly, no divider. The firmware fires them
+**sequentially** — four sensors pinging together hear each other and return
+confident nonsense.
+
+#### 3.1.2 Horizontal IR — 2× forward/rearward facing
+
+```
+   ESP32 3V3 ──┬──► VCC ─┐
+               │         │  IR module
+              GND ───────┼─┤ GND  OUT ├──► ESP32 GPIO 13   (front)
+                         └─┤ VCC      │                14   (back)
+                           └──────────┘
+```
+
+3.3 V, same as the cliff sensors on the drive board. These face **horizontally** —
+the downward-facing ones are on the drive board deliberately (§2.1).
+
+#### 3.1.3 OLED — SSD1306 over I²C
+
+```
+                        SSD1306
+                      ┌───────────┐
+   ESP32 3V3 ─────────┤ VCC       │
+   ESP32 GND ─────────┤ GND       │
+   ESP32 GPIO 21 ─────┤ SDA       │   address 0x3C
+   ESP32 GPIO 22 ─────┤ SCL       │
+                      └───────────┘
+```
+
+Most SSD1306 modules run on 3.3 V and have their own pull-ups. If you ever put
+the OLED and something else on this bus, only **one** device should provide
+pull-ups.
+
+#### 3.1.4 Buzzer — via NPN, not driven directly
+
+```
+   5 V ──────────[buzzer]──┐
+                           │
+                           C
+   ESP32 GPIO 5 ──[100 Ω]──B   S9013 NPN
+                           E
+                           │
+                          GND
+```
+
+An active buzzer draws 30–50 mA — beyond what an ESP32 pin should source, and
+inductive kick from a passive buzzer is worse. The 100 Ω limits base current;
+the transistor does the work.
+
+If you use a **passive** (magnetic) buzzer, add a flyback diode across it,
+cathode to +5 V.
+
+#### 3.1.5 Safety line — out to the drive board
+
+```
+   sense GPIO 25 ──────────wire──────────► drive GPIO 27
+   sense GND     ──────────wire──────────► drive GND
+```
+
+See §2.2.6 for polarity and the fail-open caveat.
+
+#### 3.1.6 Sense board pin summary
+
+| Function | Pin | Level |
+|---|---|---|
+| Ultrasonic TRIG ×4 (shared) | GPIO 23 | 3.3 V out |
+| Ultrasonic ECHO front/back | GPIO 34 / 35 | **5 V → divider** |
+| Ultrasonic ECHO left/right | GPIO 36 / 39 | **5 V → divider** |
+| Horizontal IR front/back | GPIO 13 / 14 | 3.3 V |
+| I²C SDA / SCL (OLED) | GPIO 21 / 22 | 3.3 V |
+| Buzzer (via NPN) | GPIO 5 | 3.3 V |
+| SAFETY_OUT → drive | GPIO 25 | open-drain style |
+| Spare | 4, 16, 17, 18, 19, 26, 27, 32, 33 | PIR, servos later |
+
+---
+
+### 3.2 Build-order checklist
+
+Both boards, in the order that keeps each step independently testable:
+
+| # | Step | Testable without | How you know it worked |
+|---|---|---|---|
+| 1 | Flash both boards | anything | `flash.sh both` reports fw + proto |
+| 2 | MPU-6050 → drive | motors, ROS | `MPU-6050 not responding` stops appearing |
+| 3 | Encoders → drive | motors | tick counts change when you spin a wheel by hand |
+| 4 | Cliff IR → drive | motors | fault flag sets when you lift the corner off the table |
+| 5 | Battery divider → drive | motors | reported mV tracks a multimeter |
+| 6 | Ultrasonics → sense | motors | ranges track a hand moved in front |
+| 7 | Safety line | motors | asserting on sense sets the fault on drive |
+| 8 | **TB6612 + motors** | — | wheels turn, and STBY low coasts them |
+
+Steps 2–7 need only a USB cable. Do the motor driver last, once everything that
+can stop it is already proven.
 
 ---
 
