@@ -1,0 +1,34 @@
+# Perception parameters. Values here are measured on the robot, not guessed --
+# see docs/COMPONENTS.md section 5 for the evidence behind each one.
+
+camera_node:
+  ros__parameters:
+    device: /dev/video11          # rkisp mainpath; /dev/video0 is the raw CIF endpoint
+    subdev: /dev/v4l-subdev2      # IMX219 sensor: exposure, gain, orientation
+    # 4:3 deliberately. Asking a 4:3 sensor for 16:9 crops top and bottom --
+    # i.e. the floor directly in front of the robot. See camera_node docstring.
+    width: 1280
+    height: 960
+    max_rate_hz: 15.0
+    frame_id: camera_optical_frame
+    # rkaiq's 3A converges once per stream and then holds; it does NOT track
+    # the scene. Driving from a lit room into shadow keeps the startup
+    # exposure, so perception owns these.
+    auto_exposure: false
+    exposure: 2100
+    analogue_gain: 1536
+    # Set once the module is bolted to the chassis. Flipping an IMX219 also
+    # changes the Bayer order -- verify colours afterwards.
+    hflip: false
+    vflip: false
+    warmup_frames: 20
+
+detector_node:
+  ros__parameters:
+    model_path: /models/yolov5s_rk3588.rknn
+    # 10 Hz, not 40. Measured: throttling here buys the LLM +26% generation
+    # throughput, and at 0.3 m/s the robot moves 3 cm between frames.
+    rate_hz: 10.0
+    conf_threshold: 0.35
+    iou_threshold: 0.45
+    core_mask: 1                  # NPU core 0

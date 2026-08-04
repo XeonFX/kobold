@@ -24,11 +24,23 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 ARG RKNN_VERSION=2.3.0
 
+# OpenCV in this base is built WITH GStreamer but WITHOUT the V4L2 backend, and
+# /dev/video11 is a multiplanar device that the V4L2 backend could not open
+# anyway. So GStreamer is the only capture path, and it needs its plugins
+# present -- linking libgstreamer is not enough. Without plugins-good you get
+# `no element "v4l2src"` at runtime, long after the image builds cleanly.
+#   plugins-base : videoconvert, videoscale
+#   plugins-good : v4l2src
+#   tools        : gst-launch-1.0, gst-inspect-1.0, for debugging on the robot
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates \
       python3-pip \
       python3-opencv \
       python3-numpy \
+      gstreamer1.0-plugins-base \
+      gstreamer1.0-plugins-good \
+      gstreamer1.0-tools \
+      v4l-utils \
       ros-jazzy-cv-bridge \
       ros-jazzy-image-transport \
       ros-jazzy-vision-msgs \
