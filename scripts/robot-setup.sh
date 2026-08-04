@@ -34,9 +34,77 @@ fi
 
 # ------------------------------------------------------------------ layout --
 log "data directories"
-sudo mkdir -p /data/{models,maps,bags,targets,agent,deploy,firmware}
+sudo mkdir -p /data/{models,maps,bags,targets,agent,deploy,firmware,containerd}
 sudo chown -R "$USER:$USER" /data/{models,maps,bags,targets,agent,firmware}
 sudo mkdir -p /data/deploy && sudo chown "$USER:$USER" /data/deploy
+
+# Docker 29 uses containerd's image snapshotter. Docker's `data-root` can say
+# /data/docker while the multi-gigabyte snapshot store still lives on eMMC at
+# /var/lib/containerd. Move the actual store and retain the old directory as a
+# rollback copy; cleanup is intentionally a separate manual decision.
+containerd_root="$(sudo containerd config dump 2>/dev/null \
+  | awk -F"'" '/^root = / {print $2; exit}')"
+if [ "$containerd_root" != /data/containerd ]; then
+  [ -z "$(docker ps -q 2>/dev/null)" ] \
+    || die "stop running containers before migrating containerd to NVMe"
+  [ -z "$(sudo find /data/containerd -mindepth 1 -print -quit)" ] \
+    || die "/data/containerd is non-empty; inspect it before migration"
+
+  log "containerd snapshot storage -> /data/containerd"
+  sudo systemctl stop docker.service docker.socket containerd.service
+  sudo cp -a /var/lib/containerd/. /data/containerd/
+  if sudo grep -q '^#root = "/var/lib/containerd"' /etc/containerd/config.toml; then
+    sudo sed -i 's|^#root = "/var/lib/containerd"|root = "/data/containerd"|' \
+      /etc/containerd/config.toml
+  elif sudo grep -q '^root = ' /etc/containerd/config.toml; then
+    sudo sed -i 's|^root = .*|root = "/data/containerd"|' /etc/containerd/config.toml
+  else
+    die "cannot locate containerd root setting in /etc/containerd/config.toml"
+  fi
+  sudo systemctl start containerd.service docker.service
+  [ "$(sudo containerd config dump | awk -F"'" '/^root = / {print $2; exit}')" = /data/containerd ] \
+    || die "containerd did not start with its NVMe root"
+fi
+
+# ---------------------------------------------------------- nvme stability --
+# The Samsung 980 / PM991 family drops off the PCIe bus on RK3588 when it enters
+# a deep power state: the controller stops answering, the kernel logs
+#
+#     nvme nvme0: controller is down; will reset: CSTS=0xffffffff
+#
+# and every write to /data returns EIO. Seen on this board after ~90 minutes
+# idle. The kernel's own diagnostic recommends exactly these two parameters —
+# one disables the drive's autonomous power states, the other stops the PCIe
+# link from being powered down underneath it.
+#
+# Applied here rather than by hand because a fix that lives only in one
+# machine's bootloader is a fix that vanishes on the next reflash.
+has_nvme() {
+  [ -e /dev/nvme0 ] && return 0
+  # Also true when the drive has already dropped off: the PCI function stays
+  # enumerated even after the nvme driver detaches, which is the exact state
+  # this workaround exists to prevent.
+  command -v lspci >/dev/null 2>&1 && lspci 2>/dev/null | grep -qi 'non-volatile memory'
+}
+
+if has_nvme && [ -f /etc/kernel/cmdline ]; then
+  log "NVMe power-management workaround"
+  command -v nvme >/dev/null 2>&1 || sudo apt-get install -y -qq nvme-cli || true
+
+  if grep -q 'nvme_core.default_ps_max_latency_us' /etc/kernel/cmdline; then
+    echo "      already applied"
+  else
+    sudo cp -n /etc/kernel/cmdline /etc/kernel/cmdline.bak-kobold
+    sudo sed -i 's/$/ nvme_core.default_ps_max_latency_us=0 pcie_aspm=off/' /etc/kernel/cmdline
+    if [ -x /usr/sbin/u-boot-update ]; then
+      sudo /usr/sbin/u-boot-update >/dev/null
+      echo "      applied — REBOOT REQUIRED before it takes effect"
+    else
+      echo "      /etc/kernel/cmdline updated, but u-boot-update was not found;"
+      echo "      regenerate your bootloader config by hand"
+    fi
+  fi
+fi
 
 # --------------------------------------------------------- emergency tools --
 # esptool on the HOST, not only in a container. If the container stack is broken

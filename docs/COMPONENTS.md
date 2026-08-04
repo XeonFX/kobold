@@ -36,11 +36,60 @@ USB-C with a different USB-serial controller. All enumerate as `/dev/ttyUSB*`.
 
 | # | Component | Status | Role | Notes |
 |---|---|---|---|---|
-| 10 | **Samsung PM991 256 GB** M.2 NVMe **(2280 ✓)** | 🟢 | **Robot NVMe** — `/var/lib/docker`, models, maps, ring-buffer rosbag | Chosen for power, not capacity: DRAM-less OEM drive at ~2.5 W under load vs 6–7 W for the PM9A1. That's real battery minutes. 2280 confirmed — no adapter needed |
+| 10 | **Samsung PM991 256 GB** M.2 NVMe **(2280 ✓)** | 🟢 | **Robot NVMe** — `/data/containerd`, models, maps, ring-buffer rosbag | Containerd's snapshotter ignores Docker's `data-root`; its own root is explicitly set to `/data/containerd`. Chosen for power: ~2.5 W under load vs 6–7 W for the PM9A1 |
 | 11 | **Samsung PM9A1 2 TB** M.2 NVMe | 🔵 | **Archive** on the Odroid N2 via USB 3 enclosure: registry, rosbags, datasets, model versions | Far too power-hungry for a battery robot, and rosbags belong off-robot anyway |
 | 12 | **ADATA SX8200 Pro 512 GB** M.2 NVMe | 🟡 | Spare / desktop | SM2262EN controller — the hottest-running of the three. Poor fit for a sealed chassis |
 | 13 | **64 GB eMMC** (on Rock 5B) | 🟢 | Root filesystem | Keep the OS here: recoverable with a card reader if you brick it |
 | 14 | **2× Lexar Silver Plus 64 GB microSD** | 🟡 | OS for Zero 3W / Pi Zero 2W | In use if those boards get deployed |
+| 15 | **Lexar LPAH100 M.2 heatsink** + thermal pads | 🟢 | Fitted to the PM991 | Rock 5B puts the M.2 slot on the **underside** — a thermal dead zone with no airflow and no fan coverage. Idles at 40–42 °C with the heatsink |
+
+### The PM991 falls off the PCIe bus without two kernel parameters
+
+Observed 2026-08-04: after ~90 minutes idle the controller stopped answering.
+
+```
+nvme nvme0: controller is down; will reset: CSTS=0xffffffff, PCI_STATUS=0x10
+nvme nvme0: Removing after probe failure status: -19
+nvme0n1: detected capacity change from 500118192 to 0
+```
+
+Every write to `/data` then returns `EIO` while `df` still reports the old free
+space from a cached superblock — an unusually confusing failure mode, because
+the mount looks healthy right up until you touch it.
+
+**The fix** — applied automatically by `scripts/robot-setup.sh`, appended to
+`/etc/kernel/cmdline` and regenerated into `extlinux.conf` with `u-boot-update`:
+
+```
+nvme_core.default_ps_max_latency_us=0 pcie_aspm=off
+```
+
+The first disables the drive's autonomous power state transitions; the second
+stops the PCIe link being powered down underneath it. On RK3588 the root complex
+cannot reliably bring either back.
+
+**Thermal was investigated and ruled out**, not assumed. SMART lifetime counters
+after the incident:
+
+| Counter | Value | Meaning |
+|---|---|---|
+| `Thermal Management T1/T2 Total Time` | **0** | drive has never throttled itself |
+| `Critical Composite Temperature Time` | **0** | never reached `cctemp` (85 °C) |
+| `Warning Temperature Time` | 36 min | lifetime, on a used OEM pull — predates this build |
+| `media_errors` | 0 | no data damage |
+
+A hot-to-the-touch drive at the time was a *consequence*, not the cause: once
+the nvme driver detaches, the slot keeps supplying 3.3 V and nothing is left
+managing the controller's power or thermals.
+
+The 1,373 entries in the drive's error log are all `sqid 0` /
+`0x2002 Invalid Field in Command` — the host probing an admin feature this
+firmware does not implement. Benign.
+
+**Also secure the card mechanically.** An M.2 2280 held only by its connector
+lifts when the board is moved, and on a robot that vibrates continuously that is
+its own source of the identical `CSTS=0xffffffff` signature. Standoff screw at
+the 80 mm position is mandatory, not optional.
 
 ---
 
@@ -57,17 +106,122 @@ USB-C with a different USB-serial controller. All enumerate as `/dev/ttyUSB*`.
 
 ## 5. Cameras and vision
 
+⚠️ **The ROCK 5B has ONE MIPI CSI connector** (plus one DSI) — the 5B**+** is the two-CSI variant.
+So only one of these goes on the robot, and the €0 stereo idea is dead. That single connector is
+the *whole* reason: contrary to an earlier note here, the two modules' optics turn out to be nearly
+identical (62° vs 62.2° horizontal), which would have made them a perfectly serviceable stereo pair
+had there been somewhere to plug the second one in. See PROJECT_PLAN §6.
+
 | # | Component | Status | Role | Notes |
 |---|---|---|---|---|
-⚠️ **The ROCK 5B has ONE MIPI CSI connector** (plus one DSI) — the 5B**+** is the two-CSI variant.
-So only one of these goes on the robot, and the €0 stereo idea is dead: the single connector plus
-**visibly different lenses** (matched optics are what stereo triangulation actually requires) rules
-it out twice over. See PROJECT_PLAN §6.
-
-| 19 | **Radxa Camera 8M** (IMX219, larger lens) | 🟢 | **Robot camera** — 1280×720 @ 30 fps — *if it wins the FOV test* | **Measure before choosing:** photograph a ruler from exactly 1 m with each module and compare visible width. Wider FOV wins for the robot — you want to see the chair leg beside you, not read a book across the room |
-| 20 | **Arducam** (IMX219, small lens) | 🟢 | Robot camera *if it wins the FOV test*; otherwise the **Zero 3W room node** | Same sensor as #19 but different optics, which is precisely why they can't be a stereo pair |
-| 21 | **Radxa Camera 4K** (IMX415) | 🟡 | Spare — competes for the same single CSI slot | Heavier, worse rolling-shutter smear under motion, and 4K frames cost memory bandwidth the NPU wants. With only one CSI connector, this loses to a wide-FOV IMX219 |
+| 19 | **Radxa Camera 8M 219** (IMX219) | 🟢 | **Robot camera** | 2.95 mm, **f/2.5**, FOV **D=74° H=62° V=49°**, TV-distortion <0.3%, 1G4P, 32×32 mm. **15-pin 1.0 mm** FPC. Verified working end to end 2026-08-04 |
+| 20 | **Arducam B0390** (IMX219) | 🟡 | Spare — **cannot connect to the Rock 5B** | 3.04 mm, **f/2.0**, FOV **H=62.2° V=48.8°**, 25×24 mm. Better optics, but a **22-pin 0.5 mm** socket: needs a non-standard 22→15 adapter cable. See below |
+| 21 | **Radxa Camera 4K** (IMX415) | 🔴 | **Tested 2026-08-04 — does not stream on this board** | Better sensor on paper (1/2.8″, 1.45 µm pixels, **75° H FOV**, M12 swappable lens) but the MIPI link fails with continuous ECC errors. See below |
 | 22 | **Intel Neural Compute Stick 2** (Myriad X) | ⚪ | **Shelved — do not spend time on this** | OpenVINO dropped Myriad X support after 2022.3, and ARM64 host support was never good. The RK3588's NPU is faster, better supported, and already in the robot |
+
+### Why the Radxa wins — connector, not optics
+
+**Decision: Radxa Camera 8M 219.** The Arducam has genuinely better optics (see below)
+but carries a **22-pin 0.5 mm** connector on the camera board, while the Rock 5B has a
+**15-pin 1.0 mm** CSI socket. Connecting it needs a 22→15 adapter cable oriented
+narrow-at-camera — the reverse of a normal Pi Zero cable, and not something to assume
+is wired correctly without testing.
+
+That settles it, and for a better reason than convenience: **camera ribbons work loose on
+a machine that vibrates.** The Radxa uses a commodity 15-pin cable that can be replaced
+from any parts drawer. The Arducam would put a special-order adapter on the critical path
+of the robot's only camera — a part needing its own spare and its own re-supply. Two-thirds
+of a stop does not justify that on a moving platform.
+
+Revisit only if detection accuracy actually disappoints in Phase 4, and treat the adapter
+cable as the cost of that experiment.
+
+### The optics comparison, for the record
+
+Both modules are the **same sensor** (IMX219, 3280×2464, 1/4″, rolling shutter) on the **same
+driver** and the **same overlay** — so the swap costs nothing in *software*. The blocker is purely
+mechanical (see above). Radxa publishes
+no optics on its product page, which is why an empirical FOV test was originally planned — but the
+[product brief](https://dl.radxa.com/accessories/camera-8m-219/radxa_camera_8m_219_product_brief_Revision_1.0.pdf)
+has the numbers, and they are effectively the same lens: both frame ~120 cm of a tape measure at
+1 m. A ruler cannot resolve 62° from 62.2°.
+
+The one axis they differ on is **aperture: f/2.0 vs f/2.5 — 1.56× more light** to the Arducam.
+That matters here specifically because indoor domestic lighting runs 50–200 lux, where a 1.12 µm
+pixel is noise-limited, and because the robot is *moving while it looks*. The extra light buys
+either a shorter exposure (less motion blur, which is what actually breaks detection and feature
+tracking) or lower analogue gain (less noise into the NPU).
+
+Marginal, though: two-thirds of a stop. The Radxa is the one with a *published* distortion figure,
+so if monocular depth calibration later proves fussy, swapping back is cheap and worth trying.
+
+### The Radxa Camera 4K does not work here — MIPI link failure
+
+Tested 2026-08-04. On paper this is the better robot camera: **1/2.8″ sensor with
+1.45 µm pixels (1.68× the area of the IMX219's 1.12 µm), 75° horizontal FOV against
+62°, and an M12×P0.5 mount so the lens is swappable.** Wider view and better low light
+are exactly what an indoor robot wants. It does not stream.
+
+The sensor is alive — `imx415 3-001a: Detected imx415 id 0000e0` over I2C at address
+0x1a — but the differential lanes deliver corrupt data continuously:
+
+```
+mipi2-csi2-hw ERR1:0x10000000 (ecc2)     ~4600 per capture attempt
+```
+
+`ecc2` is an uncorrectable 2-bit ECC error in the MIPI packet header. The ISP never
+emits a frame; the pipeline sits in PLAYING until it times out.
+
+Every configuration was tried, including a hand-built 2-lane overlay
+(`rock-5b-radxa-camera-4k-2lane.dtbo`, kept disabled in `/boot/dtbo/`):
+
+| Config | Lanes | Link rate | Frames | ECC errors |
+|---|---|---|---|---|
+| IMX219 (reference) | 2 | 456 MHz | 300 ✓ | 0 |
+| IMX415 native | 4 | 891 MHz | 0 | 4663 |
+| IMX415 1080p mode | 4 | 446 MHz | 0 | 4582 |
+| IMX415 2-lane custom overlay | 2 | 446 MHz | 0 | 4660 |
+| IMX415 reseated both ends | 4 | 891 MHz | 0 | 4663 |
+| IMX415 ribbon reversed | 4 | 891 MHz | 0 | 4662 |
+
+The 2-lane row is the same lane count and effectively the same clock as the working
+IMX219, which **rules out signal integrity at high rates and rules out lane count**.
+Reseating and reversing the ribbon changed nothing — and the sensor still answered on
+I2C after reversal, so that flip did not alter the electrical mapping either.
+
+The fault is in the cable or the module itself — neither substitutable, since there is
+exactly one cable of that type. Not diagnosable further without a spare.
+
+Note the connector differs from the IMX219 modules: the 4K camera and the Rock 5B share
+the same socket type, so it uses a straight-through cable, while the 8M 219 needs a
+15-pin-to-board cable.
+
+**If a replacement cable ever turns up, retry** — the sensor is genuinely better and the
+2-lane overlay is already built and waiting. Until then this is a dead component.
+
+### Verified camera pipeline (2026-08-04)
+
+Confirmed end to end on the Rock 5B with the Radxa module:
+
+- Probes as `imx219 3-0010` — **I2C bus 3, address 0x10**. A reversed FPC yields no probe at all,
+  so a successful probe is sufficient proof the ribbon is the right way round at both ends.
+- Full chain works: sensor → `csi2-dphy0` → `rkcif-mipi-lvds2` → `rkisp0-vir0` → V4L2, with
+  `rkaiq_3A` running. Captured 1920×1080 NV12 via GStreamer from **`/dev/video11`** (`rkisp_mainpath`).
+- Sensor subdev is **`/dev/v4l-subdev2`**, exposing `horizontal_flip` / `vertical_flip`. Default
+  orientation comes out **180° rotated**; set both to 1 once the module is bolted to the chassis.
+  Note that flipping an IMX219 also changes the Bayer order — check colours after, and rotate
+  downstream in the ROS node instead if they go wrong.
+- **`rkaiq` auto-exposure converges once per stream, then holds — it does not track the scene.**
+  Measured: within one session two completely different scenes both held `exposure`=2100 /
+  `analogue_gain`=1536; across a restart the gain moved to 1146 and produced a correctly exposed
+  frame (mean 115/255). Brightness was also flat across all 300 frames of a single capture, so
+  there is no per-frame hunting.
+
+  **This matters for Phase 4.** A robot driving from a lit room into a shadow will keep the
+  exposure it converged on at stream start. Perception should either drive exposure explicitly
+  through the sensor subdev controls, or restart the stream on large luminance shifts — not
+  assume 3A adapts. Discarding the first ~20 frames after opening a stream remains cheap
+  insurance while it settles.
 
 ---
 
