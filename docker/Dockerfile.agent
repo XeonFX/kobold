@@ -1,0 +1,45 @@
+# Agent — Hermes Agent plus the ROS 2 MCP server that exposes the robot.
+#
+# The agent reaches the robot through MCP tools, and the model through an
+# OpenAI-compatible base_url. Both are indirections on purpose: swapping
+# Qwen3-VL for Qwen3.5, or for a cloud model when WiFi is up, is a config
+# change rather than a code change.
+#
+# Tools stay COARSE-GRAINED. navigate_to("kitchen") is a good tool;
+# set_left_motor_pwm(180) is a terrible one, because it puts a 1 Hz model inside
+# a 100 Hz control loop. Every tool should take seconds, report a result, and be
+# safe to call in any state.
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+# MCP server + HTTP client. Hermes Agent itself is installed at configure time
+# rather than baked in: it is driven by agent/hermes/config.yaml, which is
+# bind-mounted from the git checkout, so pinning it here would mean rebuilding
+# the image to change agent behaviour.
+RUN pip install --no-cache-dir \
+      "mcp>=1.2.0" \
+      httpx \
+      pyyaml \
+      "uvicorn[standard]" \
+      fastapi
+
+WORKDIR /app
+COPY agent/ /app/agent/
+
+ENV LLM_BASE_URL=http://localhost:8080/v1 \
+    ROS_DOMAIN_ID=42 \
+    KOBOLD_AGENT_CONFIG=/config/config.yaml
+
+# NOTE: kobold_mcp (the ROS 2 tool server) and the Hermes wiring are Phase 6.
+# Reaching the robot's ROS graph from here also needs rclpy, which is why the
+# final image will likely extend the ROS base instead — deferred until the tool
+# surface is actually defined, rather than guessing at it now.
+CMD ["bash", "-lc", "echo 'kobold-agent: dependencies ready, MCP tool server lands in Phase 6' && sleep infinity"]

@@ -1,0 +1,58 @@
+# Perception — YOLO detection, SigLIP embeddings, monocular depth, on the NPU.
+#
+# Extends the ROS base because perception publishes into the ROS graph, and adds
+# the RKNN runtime on top.
+#
+# THE VERSION CHAIN
+# -----------------
+# librknnrt.so in this image must be compatible with the rknpu kernel driver on
+# the HOST. This is the one place containerisation does not give independence —
+# you cannot pin your way out of a kernel interface. Verified on the robot:
+#
+#     rknpu driver : v0.9.8    (the newest that exists; RKLLM needs >= 0.9.6)
+#     librknnrt    : 2.3.0     (matches the host's own /usr/lib copy)
+#
+# entrypoint.sh prints both at startup so a mismatch is the first line in the
+# log rather than an inference failure that looks like model corruption.
+# FROM the upstream ROS image, not from kobold-ros: the CI matrix builds all
+# services in PARALLEL, so depending on a sibling image is a race. Both start
+# from the same upstream layers, so the registry cache still shares most of it.
+FROM ros:jazzy-ros-base AS runtime
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG RKNN_VERSION=2.3.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates \
+      python3-opencv \
+      python3-numpy \
+      ros-jazzy-cv-bridge \
+      ros-jazzy-image-transport \
+      ros-jazzy-vision-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned by tag, not `main` — a runtime that silently moves is exactly the
+# failure this whole pipeline exists to prevent.
+RUN curl -fsSL -o /usr/lib/librknnrt.so \
+      "https://github.com/airockchip/rknn-toolkit2/raw/v${RKNN_VERSION}/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so" \
+    && ldconfig \
+    && echo "${RKNN_VERSION}" > /etc/kobold-rknn-version
+
+# rknn-toolkit-lite2 is the INFERENCE half. The conversion toolkit
+# (rknn-toolkit2) is x86_64-only and deliberately absent: models are converted
+# elsewhere and arrive as artifacts. See models/manifest.yaml.
+RUN pip3 install --no-cache-dir --break-system-packages \
+      "rknn-toolkit-lite2==${RKNN_VERSION}" \
+    || echo "WARN: rknn-toolkit-lite2 wheel unavailable for this Python; \
+the C runtime in /usr/lib/librknnrt.so is still usable via ctypes"
+
+ENV RKNN_LIB=/usr/lib/librknnrt.so \
+    MODELS_DIR=/models
+
+# NOTE: the kobold_perception ROS package is Phase 4 and does not exist yet.
+# This image installs the runtime so the NPU path can be validated on hardware
+# now; the launch file lands with the package. Until then the service is
+# profile-gated in compose.yaml and is not started by a normal deploy.
+CMD ["bash", "-lc", "echo 'kobold-perception: runtime ready, application code lands in Phase 4' && sleep infinity"]

@@ -1,0 +1,79 @@
+# Voice — VAD, ASR, TTS. CPU only, pinned to the A55 cluster in compose.yaml.
+#
+# No NPU here on purpose: whisper.cpp and Piper are efficient enough on the A55
+# cores, and leaving the NPU entirely to vision and the LLM avoids contention on
+# the one resource that has none to spare.
+#
+# English-only. Polish Whisper fine-tunes are distributed as f16 (quantising
+# wrecks Polish transcription), which costs ~500 MB instead of the ~60 MB an
+# English base.en q5 needs — and that collides with the LLM in 8 GB. If Polish
+# comes back, revisit the RAM budget in PROJECT_PLAN section 7.1 first.
+FROM debian:bookworm-slim AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned. whisper.cpp moves fast and an unpinned clone is a build that changes
+# under you between deploys.
+ARG WHISPER_TAG=v1.7.4
+
+# GGML_NATIVE=OFF is required, not an optimisation. ggml's arm64 auto-detection
+# emits -mcpu=native+nodotprod+noi8mm+nosve, which GCC 12 (bookworm) rejects
+# outright: "unknown value ... for '-mcpu'". Disabling detection and naming the
+# target ISA explicitly is both buildable and more correct for a container that
+# is built once and run on a known CPU.
+#
+# RK3588 is Cortex-A76 + A55: ARMv8.2-A with FP16 and DotProd, no SVE, no i8mm.
+ARG ARM_ARCH_FLAGS="-march=armv8.2-a+fp16+dotprod"
+
+RUN git clone --depth 1 --branch "${WHISPER_TAG}" https://github.com/ggml-org/whisper.cpp /src \
+    && cmake -S /src -B /src/build \
+         -DCMAKE_BUILD_TYPE=Release \
+         -DWHISPER_BUILD_TESTS=OFF \
+         -DWHISPER_BUILD_EXAMPLES=ON \
+         -DBUILD_SHARED_LIBS=OFF \
+         -DGGML_NATIVE=OFF \
+         -DCMAKE_C_FLAGS="${ARM_ARCH_FLAGS}" \
+         -DCMAKE_CXX_FLAGS="${ARM_ARCH_FLAGS}" \
+    && cmake --build /src/build --config Release -j"$(nproc)"
+
+# --------------------------------------------------------------- runtime ----
+FROM debian:bookworm-slim AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip curl ca-certificates \
+      libgomp1 libsndfile1 alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Multi-stage: the compiler and 400 MB of build tree stay behind.
+# Static build, so only the binaries need copying. A COPY whose glob matches
+# nothing is a hard build failure, and shared-library paths move between
+# whisper.cpp releases — not worth betting the build on.
+COPY --from=build /src/build/bin/ /usr/local/bin/
+
+# Piper ships prebuilt aarch64 binaries — no reason to compile it.
+ARG PIPER_VERSION=2023.11.14-2
+RUN curl -fsSL -o /tmp/piper.tar.gz \
+      "https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_aarch64.tar.gz" \
+    && tar -xzf /tmp/piper.tar.gz -C /opt \
+    && ln -sf /opt/piper/piper /usr/local/bin/piper \
+    && rm /tmp/piper.tar.gz
+
+RUN pip3 install --no-cache-dir --break-system-packages \
+      "uvicorn[standard]" fastapi numpy onnxruntime
+
+# Models are volume-mounted from /data/models, never baked in — they change on a
+# different cadence from code. See models/manifest.yaml.
+ENV ASR_MODEL=/models/ggml-base.en-q5_0.bin \
+    TTS_VOICE=/models/en_US-amy-medium.onnx \
+    VAD_MODEL=/models/silero_vad.onnx
+
+# NOTE: the websocket pipeline (VAD -> wake word -> ASR -> agent -> TTS) is
+# Phase 6. This image proves the toolchain builds on arm64 and pins the
+# binaries; until then the service is profile-gated in compose.yaml.
+CMD ["bash", "-lc", "ls /usr/local/bin/ && echo 'kobold-voice: whisper.cpp + piper ready, pipeline lands in Phase 6' && sleep infinity"]
