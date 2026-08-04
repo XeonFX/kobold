@@ -40,12 +40,18 @@ exposure chosen at startup. `auto_exposure: false` takes the controls back.
 from __future__ import annotations
 
 import cv2
-import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
 from sensor_msgs.msg import CameraInfo, Image
+
+from . import rga
 
 # Sensor geometry, from the IMX219 datasheet and the Radxa Camera 8M 219
 # product brief. Used to synthesise a plausible CameraInfo until a real
@@ -56,17 +62,24 @@ PIXEL_UM = 1.12
 FOCAL_MM = 3.04
 
 
-def build_pipeline(device: str, width: int, height: int) -> str:
+def build_pipeline(device: str, width: int, height: int, raw_nv12: bool) -> str:
     """GStreamer pipeline string for the ISP mainpath.
 
     drop=true with max-buffers=1 makes the sink always hand us the newest
     frame. For a robot a stale frame is worse than a dropped one -- acting on
     where an obstacle *was* is the failure we are avoiding.
+
+    With RGA available we take NV12 straight off the ISP and convert on the
+    2D accelerator instead of asking GStreamer's videoconvert to do it. That
+    was measured at 37.9% of a core versus 5.4% for the raw path -- roughly
+    32% of an A55 handed back, on the cluster the camera shares with the whole
+    ROS graph.
     """
+    tail = ("" if raw_nv12 else "videoconvert ! video/x-raw,format=BGR ! ")
     return (
         f"v4l2src device={device} io-mode=4 ! "
         f"video/x-raw,format=NV12,width={width},height={height} ! "
-        f"videoconvert ! video/x-raw,format=BGR ! "
+        f"{tail}"
         f"appsink drop=true max-buffers=1 sync=false"
     )
 
@@ -96,6 +109,8 @@ class CameraNode(Node):
         self.declare_parameter("vflip", False)
         # Frames to discard after the stream opens, while 3A settles.
         self.declare_parameter("warmup_frames", 20)
+        # Falls back to CPU conversion automatically if the RGA is unavailable.
+        self.declare_parameter("use_rga", True)
 
         self.device = self.get_parameter("device").value
         self.width = int(self.get_parameter("width").value)
@@ -117,7 +132,11 @@ class CameraNode(Node):
 
         self._apply_sensor_controls()
 
-        pipeline = build_pipeline(self.device, self.width, self.height)
+        # Only ask GStreamer for BGR if we cannot do it on the RGA.
+        self.use_rga = bool(self.get_parameter("use_rga").value) and rga.available()
+        self.get_logger().info(rga.status())
+        pipeline = build_pipeline(self.device, self.width, self.height,
+                                  raw_nv12=self.use_rga)
         self.get_logger().info(f"opening: {pipeline}")
         self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         if not self.cap.isOpened():
@@ -164,7 +183,7 @@ class CameraNode(Node):
             ]
 
         cmd = ["v4l2-ctl", "-d", subdev, "--set-ctrl", ",".join(ctrls)]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             # Not fatal: a wrong subdev path or a kernel that renumbered the
             # nodes should degrade to "camera works, exposure is whatever 3A
@@ -206,6 +225,10 @@ class CameraNode(Node):
     # -- main loop ----------------------------------------------------------
     def _tick(self) -> None:
         ok, frame = self.cap.read()
+        if ok and frame is not None and self.use_rga:
+            # appsink hands NV12 back as (H*3/2, W) single channel.
+            frame = rga.nv12_to_bgr(frame.reshape(self.height * 3 // 2, self.width),
+                                    self.width, self.height)
         if not ok or frame is None:
             self._fail_streak += 1
             if self._fail_streak in (1, 10, 100):

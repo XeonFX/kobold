@@ -91,6 +91,9 @@ services:
       # IMX219 controls: exposure, gain, and orientation.
       - /dev/v4l-subdev2:/dev/v4l-subdev2
       - /dev/dri:/dev/dri      # hardware H.264 encode via rkmpp
+      # 2D accelerator. Without it the node silently falls back to CPU colour
+      # conversion, which measured 32% of an A55 against RGA's ~1%.
+      - /dev/rga:/dev/rga
     group_add: ["video", "render"]
     cpuset: "0,1,2,3"
     profiles: [perception]
@@ -120,6 +123,7 @@ services:
       - /data/targets:/data/targets
     devices:
       - /dev/dri:/dev/dri
+      - /dev/rga:/dev/rga       # letterbox on the 2D accelerator, not the CPU
     group_add: ["render", "video"]
     # Reserve one A76 for capture/pre/post-processing. The raw C++ path sustains
     # ~58 FPS here while voice uses the other three A76s.

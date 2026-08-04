@@ -74,6 +74,43 @@ RUN PYTAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.vers
     && rm -f "/tmp/${WHEEL}" \
     && python3 -c "from rknnlite.api import RKNNLite; print('rknnlite import OK')"
 
+
+# --------------------------------------------------------------------- RGA --
+# RK3588's 2D accelerator. Colour conversion and scaling are what it exists for,
+# and doing them on the CPU instead is measurably expensive — cv2's NV12->BGR
+# plus letterbox costs 20.3 ms of CPU per frame against RGA's 0.69 ms, because
+# OpenCV reaches that speed by using every core it can find. On a robot those
+# cores belong to ASR and the LLM.
+#
+# Not in Ubuntu's apt (it comes from Rockchip), so pinned from upstream by tag
+# exactly like librknnrt. The version chain is looser here than for the NPU —
+# RGA is a stable 2D blitter, not a kernel-coupled inference runtime — but pin
+# it anyway so builds are reproducible.
+ARG LIBRGA_TAG=v1.10.0
+RUN curl -fsSL -o /usr/lib/librga.so \
+      "https://github.com/airockchip/librga/raw/${LIBRGA_TAG}/libs/Linux/gcc-aarch64/librga.so" \
+    && mkdir -p /usr/include/rga \
+    && for h in im2d.h im2d_type.h im2d_buffer.h im2d_common.h im2d_single.h \
+                im2d_task.h im2d_expand.h im2d_mpi.h im2d_version.h rga.h \
+                drmrga.h RgaUtils.h RgaApi.h; do \
+         curl -fsSL -o "/usr/include/rga/$h" \
+           "https://github.com/airockchip/librga/raw/${LIBRGA_TAG}/include/$h"; \
+       done \
+    && ldconfig \
+    && echo "${LIBRGA_TAG}" > /etc/kobold-librga-version
+
+# Small C shim over im2d. The API passes rga_buffer_t BY VALUE, and replicating
+# that struct in ctypes would mean keeping a large layout in sync with the
+# header — one wrong field gives silent corruption rather than an error. Two
+# pointer-and-int functions have no such failure mode.
+COPY ros2_ws/src/kobold_perception/rga/rga_shim.c /tmp/rga_shim.c
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && gcc -O2 -fPIC -shared -o /usr/lib/libkobold_rga.so /tmp/rga_shim.c -lrga -lpthread \
+    && rm -f /tmp/rga_shim.c \
+    && ldconfig \
+    && apt-get purge -y gcc libc6-dev && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV RKNN_LIB=/usr/lib/librknnrt.so \
     MODELS_DIR=/models
 

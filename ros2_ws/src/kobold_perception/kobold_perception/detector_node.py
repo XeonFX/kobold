@@ -44,6 +44,8 @@ from vision_msgs.msg import (
     ObjectHypothesisWithPose,
 )
 
+from . import rga
+
 # YOLOv5s COCO. Kept inline rather than in a file: the class list is a property
 # of the .rknn artifact, and a mismatch between them is a silent labelling bug.
 COCO = [
@@ -75,7 +77,7 @@ def letterbox(image: np.ndarray, size: int = INPUT_SIZE):
 
     h, w = image.shape[:2]
     scale = min(size / w, size / h)
-    nw, nh = int(round(w * scale)), int(round(h * scale))
+    nw, nh = round(w * scale), round(h * scale)
     resized = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_LINEAR)
     canvas = np.full((size, size, 3), 114, dtype=np.uint8)
     dx, dy = (size - nw) // 2, (size - nh) // 2
@@ -149,7 +151,12 @@ class DetectorNode(Node):
 
     def _run_once(self, msg: Image) -> None:
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        padded, scale, dx, dy = letterbox(frame)
+        # RGA when available: measured 0.69 ms cpu against cv2's 20.28 ms for
+        # the same convert-and-letterbox, because cv2 gets its speed by using
+        # every core. Falls back automatically.
+        h, w = frame.shape[:2]
+        padded = rga.bgr_letterbox(frame, INPUT_SIZE, INPUT_SIZE)
+        scale, dx, dy = rga.letterbox_params(w, h, INPUT_SIZE, INPUT_SIZE)
 
         outputs = self.rknn.inference(inputs=[padded])
         boxes, scores, classes = self._postprocess(outputs)

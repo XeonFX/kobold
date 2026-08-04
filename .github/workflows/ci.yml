@@ -32,7 +32,7 @@ jobs:
       # meant 28 findings accumulated silently while every run still showed a
       # green tick — the annotation was the only trace.
       - name: Lint
-        run: ruff check tools/ ros2_ws/src/kobold_bridge/
+        run: ruff check tools/ ros2_ws/src/kobold_bridge/ ros2_ws/src/kobold_perception/
 
   firmware:
     name: Firmware build + native tests
