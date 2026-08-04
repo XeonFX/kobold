@@ -7,59 +7,62 @@
 # ultrasonic board, which is exactly as bad as it sounds.
 #
 # ---------------------------------------------------------------------------
-# THIS ROBOT: two identical CP2102 boards, matched on PHYSICAL PORT
+# THIS ROBOT: matched on SERIAL, which was reprogrammed into each board
 # ---------------------------------------------------------------------------
-# Read off the hardware 2026-08-04 — both ESP32 DevKit V1 boards present as:
+# Both ESP32 DevKit V1 boards ship with a CP2102 bridge whose serial is left at
+# the factory default -- read off the hardware 2026-08-04, both said "0001":
 #
-#     idVendor  10c4        idProduct ea60
-#     manufacturer "Silicon Labs"
-#     product      "CP2102 USB to UART Bridge Controller"
-#     serial       "0001"          <-- IDENTICAL on both
+#     idVendor 10c4   idProduct ea60   serial "0001"   (on BOTH)
 #
-# Cheap CP2102 boards ship with the serial left at its factory default, so there
-# is nothing electrically unique to match on. The only stable discriminator is
-# which socket the board is plugged into.
+# Nothing electrically unique to match on, so the first version of this file
+# matched on physical port. That worked, but it meant the ROLE FOLLOWED THE
+# SOCKET: swapping two USB cables silently swapped drive and sense.
 #
-# CONSEQUENCE, AND IT MATTERS: the role follows the SOCKET, not the board. Move
-# a board to the other port and it changes role. Label both the ports and the
-# boards, and always use the same one.
+# Fixed properly by rewriting the CP2102 EEPROM serial on each board:
 #
-# This is backstopped in software: the firmware announces its board id in the
-# version frame at boot, and kobold_bridge refuses to talk to a board whose id
-# is not the one that port is meant to hold. A swap therefore produces a loud
-# refusal rather than motor commands going somewhere dangerous.
+#     git clone https://github.com/DiUS/cp210x-cfg && cd cp210x-cfg && make
+#     sudo ./cp210x-cfg -l                       # find bus/dev
+#     sudo ./cp210x-cfg -d <bus>.<dev> -S KOBOLD-DRIVE
+#     sudo ./cp210x-cfg -d <bus>.<dev> -S KOBOLD-SENSE
 #
-# If you would rather identity followed the board than the socket, the CP2102
-# serial is rewritable (cp210x-cfg). Then match ATTRS{serial} — see the bottom
-# of this file — and drop the KERNELS clauses.
+# Note -d wants n.n despite the help text saying bus:dev, and the device
+# re-enumerates mid-write, so the tool reports "No such device" read errors
+# after a SUCCESSFUL write. Verify with `cp210x-cfg -l` afterwards, not by
+# trusting the exit code.
 #
-# Find your port paths with:
-#   for d in /dev/ttyUSB*; do echo "$d $(udevadm info -q path -n $d)"; done
+# Identity now follows the BOARD into any socket, which is what you want on a
+# machine that gets taken apart. Label the boards to match their serials.
+#
+# Backstopped in software regardless: the firmware announces its board id in
+# the version frame at boot, and kobold_bridge refuses to talk to a board whose
+# id is not the one that port is meant to hold.
 #
 # Common bridge chips:
 #   1a86:7523  CH340          (most DevKit V1 clones)
 #   1a86:55d4  CH9102 / CH343 (many USB-C boards)
-#   10c4:ea60  CP2102         (Silicon Labs; serial is often left at "0001")
+#   10c4:ea60  CP2102         (Silicon Labs; serial often left at "0001")
 
 # ---- drive board: motors, encoders, IMU, cliff reflex ----
-SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", KERNELS=="3-1.1", SYMLINK+="robot-drive", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="KOBOLD-DRIVE", SYMLINK+="robot-drive", MODE="0660", GROUP="dialout"
 
 # ---- sense board: ultrasonic, IR, buzzer, OLED, safety line ----
-SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", KERNELS=="3-1.2", SYMLINK+="robot-sense", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="KOBOLD-SENSE", SYMLINK+="robot-sense", MODE="0660", GROUP="dialout"
 
 # ---- head board (Phase 5+): pan/tilt servos, PIR, second OLED ----
-#SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", KERNELS=="3-1.3", SYMLINK+="robot-head", MODE="0660", GROUP="dialout"
+# The spare board is still on the factory "0001". Give it a serial before
+# fitting it, or it will be indistinguishable from any other stock CP2102.
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="KOBOLD-HEAD", SYMLINK+="robot-head", MODE="0660", GROUP="dialout"
 
 # ---- lidar (Phase 5, if ever fitted) ----
 # DELIBERATELY NOT a bare 10c4:ea60 match. An earlier revision of this file had
 # exactly that, and because these ESP32 boards use the same CP2102 bridge it
 # grabbed them both: /dev/robot-lidar pointed at an ESP32, and the second board
-# silently overwrote the first one's symlink. Uncomment with a real port path
-# only once a lidar physically exists.
-#SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", KERNELS=="3-1.4", SYMLINK+="robot-lidar", MODE="0660", GROUP="dialout"
+# silently overwrote the first one's symlink. Match on that device's own serial.
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="<lidar serial>", SYMLINK+="robot-lidar", MODE="0660", GROUP="dialout"
 
-# ---- boards with genuinely unique serials ----
-# If you reflash the CP2102 serials, prefer these and delete the port matching
-# above — identity then follows the board into any socket.
-#SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="KOBOLD-DRIVE", SYMLINK+="robot-drive", MODE="0660", GROUP="dialout"
-#SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="KOBOLD-SENSE", SYMLINK+="robot-sense", MODE="0660", GROUP="dialout"
+# ---- fallback: boards with no distinguishing serial ----
+# If you ever run identical boards you cannot reprogram, match on physical port
+# and always use the same socket. Find paths with:
+#   for d in /dev/ttyUSB*; do echo "$d $(udevadm info -q path -n $d)"; done
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", KERNELS=="3-1.1", SYMLINK+="robot-drive", MODE="0660", GROUP="dialout"
+#SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", KERNELS=="3-1.2", SYMLINK+="robot-sense", MODE="0660", GROUP="dialout"

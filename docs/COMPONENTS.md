@@ -25,10 +25,50 @@ Every part you own, what it does in this build, and what it's good for if it isn
 **Correction:** all three are **ESP32 DevKit V1 (ESP-WROOM-32, 30-pin)** — there is no S3. One has
 USB-C with a different USB-serial controller. All enumerate as `/dev/ttyUSB*`.
 
-| 6 | **ESP32 DevKit V1 — USB-C variant** | 🟢 | **Drive controller.** Motors, per-side PID, 4 encoders, MPU6050, battery ADC, **4× cliff IR**, e-stop, watchdog | Chosen for this role because its different USB-serial chip has a **distinct VID/PID**, making the udev rule trivial — and CH340 clones often share serial numbers, so this is the difference between reliable device naming and sending motor commands to the wrong board |
+| 6 | **ESP32 DevKit V1 — USB-C variant** | 🟢 | **Drive controller.** Motors, per-side PID, 4 encoders, MPU6050, battery ADC, **4× cliff IR**, e-stop, watchdog | CP2102 bridge, serial reprogrammed to `KOBOLD-DRIVE` — see below |
 | 7 | **ESP32 DevKit V1 #2** | 🟢 | **Sensor hub.** 4× ultrasonic, 2× horizontal IR, buzzer, OLED, safety line | GPIO 34/35/36/39 are input-only — perfect for ultrasonic ECHO. Keeps µs-precision echo timing away from encoder interrupt storms |
 | 8 | **ESP32 DevKit V1 #3** | 🟡 | **Head unit** (Phase 5+): pan/tilt servos, PIR, second OLED. Also the **spare** | Don't populate until needed — an identical spare on the shelf beats a third USB cable |
 | 9 | **Genuino 101** — Intel Curie | ⚪ | **Shelved** | EOL since 2017. No modern toolchain, no ESP-IDF, no micro-ROS. Only distinguishing feature is onboard BLE + 6-axis IMU if you ever want a standalone wireless gadget. It *is* Arduino-Uno form factor, so it's the only board the HW-130 shield plugs into directly |
+
+
+### Telling the three ESP32s apart
+
+All three are the same board with the same USB bridge, and they arrived
+indistinguishable. Read off the hardware 2026-08-04:
+
+```
+idVendor 10c4   idProduct ea60   manufacturer "Silicon Labs"
+product "CP2102 USB to UART Bridge Controller"   serial "0001"    <-- on BOTH
+```
+
+An earlier note here claimed the USB-C board had a distinct VID/PID. It does
+not — that was written before the boards were plugged in. Nothing electrically
+distinguishes them.
+
+**Fixed by reprogramming the CP2102 EEPROM serial**, so identity follows the
+board into any socket rather than following the socket:
+
+```bash
+git clone https://github.com/DiUS/cp210x-cfg && cd cp210x-cfg && make
+sudo ./cp210x-cfg -l                              # find bus/dev
+sudo ./cp210x-cfg -d <bus>.<dev> -S KOBOLD-DRIVE
+```
+
+Two traps: `-d` wants `n.n` despite the help text saying `bus:dev`, and the
+device re-enumerates mid-write, so the tool prints `No such device` read errors
+*after a successful write*. Verify with `cp210x-cfg -l`, not the exit code.
+
+| Board | Serial | Symlink |
+|---|---|---|
+| drive | `KOBOLD-DRIVE` | `/dev/robot-drive` |
+| sense | `KOBOLD-SENSE` | `/dev/robot-sense` |
+| head (spare) | still factory `0001` | give it one before fitting |
+
+**Backstopped in software.** The firmware announces its board id in the version
+frame at boot, and `kobold_bridge` refuses to talk to a board whose id is not
+the one that port is meant to hold. Before this, `board_id` was logged and never
+checked — a swapped cable would have sent motor commands to the ultrasonic
+board in silence.
 
 ---
 
