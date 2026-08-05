@@ -400,6 +400,28 @@
   canvas.stick { touch-action: none; cursor: grab; }
   canvas.stick:active { cursor: grabbing; }
 
+  /* Overlaid on the camera rather than stacked below it. Two full-width
+     elements plus the radar did not fit a phone screen, and scrolling to
+     reach the stick while the robot is moving is the wrong thing to ask. */
+  .stick-wrap.overlay {
+    position: absolute; inset: 0;
+    place-items: center;
+    /* Only the canvas takes pointer events, so a tap outside the stick does
+       not get swallowed by the wrapper. */
+    pointer-events: none;
+  }
+  .stick-wrap.overlay canvas.stick {
+    pointer-events: auto;
+    /* Legible over a bright or busy scene without hiding it. */
+    filter: drop-shadow(0 2px 10px #000c);
+  }
+  /* With the video off the viewport is just a backdrop for the stick, so drop
+     the 4:3 letterbox and give the control room to breathe. */
+  .viewport:has(.stick-wrap.overlay.no-video) {
+    aspect-ratio: 3 / 2;
+    background: var(--surface-1);
+  }
+
   /* ---- toggles -------------------------------------------------------- */
   .switch {
     display: grid; grid-template-columns: 1fr auto; align-items: center;

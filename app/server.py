@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -178,6 +178,53 @@ async def get_target(name: str):
     return FileResponse(path)
 
 
+# --------------------------------------------------------------- camera ----
+# The camera node owns /dev/video11 and serves hardware-encoded MJPEG on its own
+# port (see kobold_perception/stream.py). Only one process can hold the device,
+# so the app proxies rather than capturing.
+#
+# It is a proxy and not a redirect so the UI keeps a same-origin URL: the <img>
+# just points at /api/camera/stream and neither the browser nor the page needs
+# to know the camera node's port, or that it exists at all.
+CAMERA_STREAM_URL = os.environ.get("CAMERA_STREAM_URL", "http://127.0.0.1:8090/stream")
+
+
+@app.get("/api/camera/stream")
+async def camera_stream():
+    """Pass the MJPEG multipart stream through, unmodified and unbuffered."""
+    import httpx
+
+    client = httpx.AsyncClient(timeout=httpx.Timeout(5.0, read=None))
+    try:
+        req = client.build_request("GET", CAMERA_STREAM_URL)
+        upstream = await client.send(req, stream=True)
+    except (httpx.ConnectError, httpx.TimeoutException):
+        await client.aclose()
+        # 503 rather than 500: the camera being absent is an expected state on a
+        # robot that is half-built, and the UI shows its own placeholder for it.
+        raise HTTPException(status_code=503, detail="camera stream unavailable")
+
+    if upstream.status_code != 200:
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=503, detail="camera stream unavailable")
+
+    async def relay():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        relay(),
+        media_type=upstream.headers.get("content-type",
+                                        "multipart/x-mixed-replace; boundary=frame"),
+        headers={"Cache-Control": "no-cache, private", "Pragma": "no-cache"},
+    )
+
+
 @app.websocket("/ws/telemetry")
 async def ws_telemetry(ws: WebSocket):
     await ws.accept()
@@ -234,8 +281,34 @@ async def ws_cmd(ws: WebSocket):
         log.info("teleop disconnected — firmware watchdog will stop the motors")
 
 
+class RevalidatingStatic(StaticFiles):
+    """StaticFiles that always revalidates.
+
+    FastAPI's StaticFiles sends ETag and Last-Modified but no Cache-Control.
+    With no Cache-Control a browser applies *heuristic* caching — roughly 10% of
+    the file's age — and serves the asset from cache without asking. That
+    produced a real failure: a phone loaded fresh index.html with new bindings
+    against a cached app.js that lacked the matching state, and Alpine threw
+    `liveBehind is not defined`.
+
+    It is not a one-off. These files are bind-mounted from the git checkout, so
+    they change on every `git checkout` — the same deploy that swaps the
+    containers. Silently serving half of the previous version is exactly the
+    class of mismatch the digest-pinning elsewhere exists to prevent.
+
+    `no-cache` does not mean "do not cache"; it means "revalidate before use".
+    The ETag still applies, so an unchanged file costs a 304 with no body. On a
+    LAN that is free, and it makes a stale UI impossible.
+    """
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return resp
+
+
 if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.mount("/", RevalidatingStatic(directory=STATIC_DIR, html=True), name="static")
 else:
     @app.get("/")
     async def missing():

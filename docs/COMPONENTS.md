@@ -1,6 +1,6 @@
 # Component Inventory
 
-Every part you own, what it does in this build, and what it's good for if it isn't used now.
+Every part in the inventory, its role in this build, and its value if unused.
 
 **Status legend:** 🟢 on the robot · 🔵 off-robot infrastructure · 🟡 reserve / future use · ⚪ shelved
 
@@ -10,7 +10,7 @@ Every part you own, what it does in this build, and what it's good for if it isn
 
 | # | Component | Status | Role | Notes |
 |---|---|---|---|---|
-| 1 | **Radxa Rock 5B** — RK3588S, 8 GB RAM, 64 GB eMMC, active cooling, free M.2 | 🟢 | **Robot brain.** ROS 2, perception, LLM, web app — all of it | 6 TOPS NPU is the whole reason this project is feasible. Only board you own supported by RKLLM/RKNN. OS on eMMC, Docker + models on NVMe |
+| 1 | **Radxa Rock 5B** — RK3588S, 8 GB RAM, 64 GB eMMC, active cooling, free M.2 | 🟢 | **Robot brain.** ROS 2, perception, LLM, web app — all of it | 6 TOPS NPU is the whole reason this project is feasible. The only board in the inventory supported by RKLLM/RKNN. OS on eMMC, Docker + models on NVMe |
 | 2 | **Odroid N2** — S922X, 4 GB RAM, 16 GB eMMC | 🔵 | **Home base station.** Docker registry, MQTT, rosbag archive, Foxglove, Grafana | Runs on mains 24/7. Good CPU, no useful NPU — infrastructure, not inference. Host the 2 TB NVMe here over USB 3 |
 | 3 | **Radxa Zero 3W** — RK3566, 2 GB RAM, 64 GB microSD, **MIPI CSI + ~1 TOPS NPU** | 🟡 | **Smart room node** — fixed camera + mic in a corner of the room | Better than first credited: it can run RKNN vision models on its own NPU and publish *detections* over MQTT instead of streaming raw video. Gives the robot a second viewpoint (finds the cat when the cat isn't in the robot's FOV) and a second listening point. ⚠️ **RKLLM does not support RK3566** — vision yes, LLM no. Also still a fine charging-dock controller |
 | 4 | **Raspberry Pi Zero 2W** — 512 MB RAM, 64 GB microSD | 🟡 | Second, dumber room node | Stream-only, no NPU. 512 MB won't run ROS 2 comfortably |
@@ -96,27 +96,44 @@ load and nothing else run, the very first command was still 1.2 fps — and
 `mpi_enc_test` immediately after was 250 fps. The plugin is genuinely broken,
 not starved.
 
-**Decision: software MJPEG for streaming.** It saturates the camera anyway:
+**Resolution: a C shim over MPP directly.** The encoders were never the problem
+— only the wrapper. Measured through the packaged Python wrapper, 1280×960, 60
+**distinct** real camera frames (repeating one frame makes H.264 P-frames
+unrealistically empty and overstates the result roughly 2×):
 
-| Encoder | fps | Bitrate | CPU |
-|---|---|---|---|
-| raw baseline | 11.9 | — | 3.0% |
-| **software MJPEG q80** | **11.9** | 5.65 Mbit/s | **9.8%** |
-| software H.264 `x264enc` ultrafast | 16.7 | **1.36 Mbit/s** | **70.4%** |
-| hardware `mppjpegenc` | 1.7 | — | broken |
-| hardware `mpph264enc` | 0.9 | — | broken |
+| Encoder | fps | CPU/frame | Bitrate @12 fps | Core @12 fps |
+|---|---|---|---|---|
+| **MJPEG q80 via MPP** | **217** | 2.11 ms | 5.59 Mbit/s | **2.5%** |
+| **H.264 2 Mbit via MPP** | **327** | 0.95 ms | **0.70 Mbit/s** | **1.1%** |
+| software `jpegenc` | 11.9 | — | 5.65 Mbit/s | 6.8% |
+| software `x264enc` | 16.7 | — | 1.36 Mbit/s | **70.4%** |
+| `mppjpegenc` (GStreamer) | 1.7 | — | — | broken |
+| `mpph264enc` (GStreamer) | 0.9 | — | — | broken |
 
-H.264 costs 10× the CPU to save 4× the bandwidth. On a robot where CPU is
-scarce and the network is a spare LAN, that is the wrong trade. End to end, a
-Python MJPEG server over `multipart/x-mixed-replace` delivered **12.9 fps at
-6.12 Mbit/s for 10.8% of a core** — full camera rate, so Python is not a
-bottleneck either and no rewrite is warranted.
+Hardware H.264 is ~60× cheaper in CPU than `x264enc` *and* half the bitrate.
+Output was verified rather than assumed: JPEG carries `ffd8`/`ffd9` and decodes
+back to 1280×960; H.264 opens with a `00000001` NAL header.
 
-**When to revisit.** If bandwidth ever becomes the constraint — remote access
-over a WAN rather than a LAN — software H.264 at 70% of a core is unaffordable
-and the VPU becomes worth the effort. The route then is a **small C shim over
-MPP directly**, exactly like the RGA one, with `mpi_enc_test` as the reference
-implementation. Not the vendor GStreamer plugin, and not a newer build of it.
+`ros2_ws/src/kobold_perception/rga/mpp_enc_shim.c` wraps MPP behind an opaque
+handle so no MPP struct crosses into Python. `librockchip-mpp` is pinned by URL
+and sha256 from Radxa's pool rather than by adding a Debian repo to an Ubuntu
+image — the same approach used for `librknnrt` and `librga`. It is
+kernel-coupled (it talks to `/dev/mpp_service`), so it must track the host
+driver.
+
+**MJPEG remains the default for the UI** because an `<img>` tag displays it with
+no client-side machinery, and 2.5% of a core is negligible. H.264 is implemented
+and ready for when the link is the constraint — remote access over a WAN, where
+0.70 Mbit/s against 5.59 decides it, at the cost of a WebRTC or MSE client.
+
+Two build details worth keeping:
+
+- `MPP_ALIGN` is not in the installed public headers. Without a local definition
+  it resolves as an implicit int-returning function, which compiles, links, and
+  silently truncates the stride.
+- The build toolchain is deliberately left installed in the image. Purging it
+  looked tidy but `apt-get purge libc6-dev && autoremove` cascades into
+  `ros-jazzy-rosidl-*` and breaks the ROS install.
 
 #### Unexplained: a tasklet storm, once
 
@@ -154,7 +171,7 @@ USB-C with a different USB-serial controller. All enumerate as `/dev/ttyUSB*`.
 | 6 | **ESP32 DevKit V1 — USB-C variant** | 🟢 | **Drive controller.** Motors, per-side PID, 4 encoders, MPU6050, battery ADC, **4× cliff IR**, e-stop, watchdog | CP2102 bridge, serial reprogrammed to `KOBOLD-DRIVE` — see below |
 | 7 | **ESP32 DevKit V1 #2** | 🟢 | **Sensor hub.** 4× ultrasonic, 2× horizontal IR, buzzer, OLED, safety line | GPIO 34/35/36/39 are input-only — perfect for ultrasonic ECHO. Keeps µs-precision echo timing away from encoder interrupt storms |
 | 8 | **ESP32 DevKit V1 #3** | 🟡 | **Head unit** (Phase 5+): pan/tilt servos, PIR, second OLED. Also the **spare** | Don't populate until needed — an identical spare on the shelf beats a third USB cable |
-| 9 | **Genuino 101** — Intel Curie | ⚪ | **Shelved** | EOL since 2017. No modern toolchain, no ESP-IDF, no micro-ROS. Only distinguishing feature is onboard BLE + 6-axis IMU if you ever want a standalone wireless gadget. It *is* Arduino-Uno form factor, so it's the only board the HW-130 shield plugs into directly |
+| 9 | **Genuino 101** — Intel Curie | ⚪ | **Shelved** | EOL since 2017. No modern toolchain, no ESP-IDF, no micro-ROS. Its only distinguishing feature is onboard BLE + a 6-axis IMU, useful for a standalone wireless device. It *is* Arduino-Uno form factor, so it's the only board the HW-130 shield plugs into directly |
 
 
 ### Telling the three ESP32s apart
@@ -205,7 +222,7 @@ board in silence.
 | 10 | **Samsung PM991 256 GB** M.2 NVMe **(2280 ✓)** | 🟢 | **Robot NVMe** — `/data/containerd`, models, maps, ring-buffer rosbag | Containerd's snapshotter ignores Docker's `data-root`; its own root is explicitly set to `/data/containerd`. Chosen for power: ~2.5 W under load vs 6–7 W for the PM9A1 |
 | 11 | **Samsung PM9A1 2 TB** M.2 NVMe | 🔵 | **Archive** on the Odroid N2 via USB 3 enclosure: registry, rosbags, datasets, model versions | Far too power-hungry for a battery robot, and rosbags belong off-robot anyway |
 | 12 | **ADATA SX8200 Pro 512 GB** M.2 NVMe | 🟡 | Spare / desktop | SM2262EN controller — the hottest-running of the three. Poor fit for a sealed chassis |
-| 13 | **64 GB eMMC** (on Rock 5B) | 🟢 | Root filesystem | Keep the OS here: recoverable with a card reader if you brick it |
+| 13 | **64 GB eMMC** (on Rock 5B) | 🟢 | Root filesystem | Keep the OS here: recoverable with a card reader after a bad flash |
 | 14 | **2× Lexar Silver Plus 64 GB microSD** | 🟡 | OS for Zero 3W / Pi Zero 2W | In use if those boards get deployed |
 | 15 | **Lexar LPAH100 M.2 heatsink** + thermal pads | 🟢 | Fitted to the PM991 | Rock 5B puts the M.2 slot on the **underside** — a thermal dead zone with no airflow and no fan coverage. Idles at 40–42 °C with the heatsink |
 
@@ -221,7 +238,7 @@ nvme0n1: detected capacity change from 500118192 to 0
 
 Every write to `/data` then returns `EIO` while `df` still reports the old free
 space from a cached superblock — an unusually confusing failure mode, because
-the mount looks healthy right up until you touch it.
+the mount appears healthy until it is written to.
 
 **The fix** — applied automatically by `scripts/robot-setup.sh`, appended to
 `/etc/kernel/cmdline` and regenerated into `extlinux.conf` with `u-boot-update`:
@@ -406,7 +423,7 @@ Confirmed end to end on the Rock 5B with the Radxa module:
 | # | Component | Status | Role | Notes |
 |---|---|---|---|---|
 | 26 | **4× HC-SR04 ultrasonic** (F/B/L/R, mounted) | 🟢 | Primary obstacle ring, 2 cm–4 m, ~15° cone. On the **sense** board | ⚠️ **ECHO is a 5 V output** — level-shift or divide it, never straight into a GPIO. Defeated by glass and by soft/angled surfaces |
-| 27 | **4× IR Flying-Fish** (FL/FR/BL/BR, **facing DOWN**) | 🟢 | **Table-edge / cliff detection.** Wired to the **drive** board | The highest-priority safety input in the system, because you want to drive on tables. At 0.3 m/s you have ~166 ms from edge to wheel-off, and an SBC round trip is 50–200 ms — so these go straight to the drive MCU, which coasts the motors in under 1 ms. Calibrate the pots **on your actual table**: gloss reflects specularly, dark matte absorbs, both fool IR |
+| 27 | **4× IR Flying-Fish** (FL/FR/BL/BR, **facing DOWN**) | 🟢 | **Table-edge / cliff detection.** Wired to the **drive** board | The highest-priority safety input in the system, because the robot drives on tables. At 0.3 m/s there is ~166 ms from edge to wheel-off, and an SBC round trip is 50–200 ms — so these go straight to the drive MCU, which coasts the motors in under 1 ms. Calibrate the pots **on the intended surface**: gloss reflects specularly, dark matte absorbs, both fool IR |
 | 28 | **2× IR Flying-Fish** (front + back, **horizontal**) | 🟢 | Close-range obstacle backstop, ~2–30 cm. On the **sense** board | Covers what ultrasonics miss: chair legs, sound-absorbing surfaces. ⚠️ **With all four corner sensors pointing down, the sides have no close-range coverage** — and skid steer sweeps sideways in every turn. Either turn slowly near obstacles or add 2 more modules (~€4) |
 | 29 | **MPU-6050** accel + gyro | 🟢 | **Gyro yaw for the odometry EKF** — the load-bearing heading source | Mount flat, near the centre of rotation, away from the motors. On a skid-steer platform this beats wheel-derived heading by a wide margin |
 | 30 | **PIR HC-SR501** | 🟡 | "Something moved, go look" trigger — **only while parked** | Useless in motion: ego-motion triggers it constantly. Nice low-power wake source for the cat game |
@@ -422,8 +439,8 @@ Confirmed end to end on the Rock 5B with the Radxa module:
 | 33 | **2× 3S 18650 enclosure** | 🟢 | Pack housing | |
 | 34 | **2× BMS 3S 20 A** | 🟢 | Per-pack protection **and balancing ✓** | Balancing confirmed — that removes the manual top-balancing chore entirely |
 | 35 | **2× HW-674 buck, 8 A** (XL4016) | 🟢 | **#1: Rock 5B @ 5.1 V into GPIO pins 2 & 4 (proven working).** #2: motor rail @ 6.5–8 V | The GPIO path works but bypasses the board's input protection — **add a 5.6–6.0 V TVS diode and a 1000 µF cap at the header.** If the XL4016's high-side switch fails short, full pack voltage lands on a €150 board. €0.30 of insurance |
-| 36 | **4× LM2596 HW-411 buck, 3 A** | 🟢 | 5 V logic rail; **separate** 5 V servo rail; spares | Keep servos on their own regulator — servo inrush browns out logic rails and produces bugs you'll chase for days |
-| 37 | **4× MT3608 boost, 2 A** | 🟡 | Spare. Not needed: every rail steps *down* from 3S | Useful if you ever want 12 V for something from a lower source |
+| 36 | **4× LM2596 HW-411 buck, 3 A** | 🟢 | 5 V logic rail; **separate** 5 V servo rail; spares | Keep servos on their own regulator — servo inrush browns out logic rails and produces bugs that take days to trace |
+| 37 | **4× MT3608 boost, 2 A** | 🟡 | Spare. Not needed: every rail steps *down* from 3S | Useful for deriving 12 V from a lower source |
 | 38 | **4× TP4056 charger** | 🟡 | Single-cell side projects; emergency cell recovery | Your BMSes balance, so routine top-balancing isn't needed. Wrong tool for a 3S pack — but see §11, the bench supply covers that |
 | 39 | **3× IP2721 USB-C PD module** | 🟡 | **Charging dock:** wall PD charger → IP2721 → 20 V → buck → 12.6 V CC/CV into the pack | These are PD **sinks**, not sources. No longer needed for main power now that the GPIO 5 V path is proven — the dock is their real job |
 
@@ -440,7 +457,7 @@ supply:
 | **Peak** | **18 W** | **3.53 A** | **1.77 A** |
 
 1.77 A per pin against a ~2–3 A rating is why **both** 5 V pins and at least
-four grounds are mandatory, not advisory. On one pin you would be at 3.5 A.
+four grounds are mandatory, not advisory. A single pin would carry 3.5 A.
 
 **This makes the 10 A fuse on that branch wrong.** At 18 W out through a ~90%
 efficient buck the pack-side draw is about **1.8 A**; a 10 A fuse will never
@@ -499,7 +516,7 @@ are no motors yet. Today's result says the compute rail is solid on its own.
 | # | Component | Status | Role | Notes |
 |---|---|---|---|---|
 | 50 | **KORAD KA3005D** bench supply, 0–30 V / 0–5 A linear | 🔵 | **Pack charging, bench powering, and current measurement** | Does three jobs a €10 charger cannot — see below |
-| 51 | **12 V fixed power supply** | 🔵 | Gentle routine charging | 12 V on a 3S pack is 4.0 V/cell ≈ 85% state of charge. That is not a limitation, it is the **longevity setting**: stopping at 4.0 V/cell roughly doubles Li-ion cycle life versus a full 4.2 V charge. Use this for day-to-day charging and the KORAD at 12.6 V only when you want maximum runtime |
+| 51 | **12 V fixed power supply** | 🔵 | Gentle routine charging | 12 V on a 3S pack is 4.0 V/cell ≈ 85% state of charge. That is not a limitation, it is the **longevity setting**: stopping at 4.0 V/cell roughly doubles Li-ion cycle life versus a full 4.2 V charge. Use this for day-to-day charging, and the KORAD at 12.6 V only when maximum runtime is needed |
 
 ### Why the KA3005D replaces a dedicated charger
 
@@ -516,7 +533,7 @@ entire algorithm.
 It also beats a fixed charger on things that matter here:
 
 - **Adjustable current limit** — charge at 0.5C or gentler, rather than whatever a cheap brick does.
-- **Live current readout** — you can *see* the CV taper and know when charging is actually finished.
+- **Live current readout** — the CV taper is visible, so end of charge is observable rather than guessed.
 - **Adjustable voltage** — the storage-charge option above simply is not available on a 12.6 V brick.
 
 ⚠️ **One real caveat: a bench supply has no termination logic.** A dedicated charger cuts off; the
@@ -524,7 +541,7 @@ KORAD will sit at 12.6 V indefinitely, trickling. Holding Li-ion at full charge 
 ageing. Disconnect when the current tapers — don't leave it connected overnight. Also disconnect
 before switching the supply off, since some units can sink a little current when unpowered.
 
-Balancing is already handled: your 3S BMS boards balance (confirmed), so the pack self-corrects.
+Balancing is already handled: the 3S BMS boards balance (confirmed), so the pack self-corrects.
 
 ### The other two jobs
 
@@ -533,7 +550,7 @@ and develop with no battery in the loop at all. Removes a whole class of "is thi
 a brownout?" confusion during Phases 0–3.
 
 **Measuring the power budget empirically.** The figures in [PROJECT_PLAN.md](PROJECT_PLAN.md) §4.3
-are estimates. With this supply you can read actual draw at idle, under NPU load, and during motor
+are estimates. This supply gives actual draw at idle, under NPU load, and during motor
 stalls — and replace the estimates with measurements. Worth doing before sizing anything else around
 them.
 

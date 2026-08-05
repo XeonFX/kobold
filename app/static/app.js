@@ -56,6 +56,9 @@ function kobold() {
     photoPicked: false,
 
     videoSrc: '/api/camera/stream',
+    // Live view sits behind the joystick. On by default — seeing where you are
+    // driving is the point — but switchable for a slow link.
+    liveBehind: true,
     videoErr: false,
 
     _cmdSock: null,

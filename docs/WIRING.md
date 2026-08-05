@@ -4,13 +4,13 @@
 All three carry a CP2102 bridge with the same factory serial; they are told apart by reprogrammed
 serials, not by chip type (§5).
 
-⚠️ Verify every pin against your board silkscreen before soldering. This is a proposed allocation.
+⚠️ Verify every pin against the board silkscreen before soldering. This is a proposed allocation.
 
 ---
 
 ## 0. What the ESP32 classic changes
 
-Dropping from S3 to WROOM-32 costs you three things, all of which have clean workarounds:
+The WROOM-32 lacks three features the ESP32-S3 provides. Each has a clean workaround:
 
 | Lost | Consequence | Workaround |
 |---|---|---|
@@ -64,27 +64,27 @@ because USB-C is the more robust connector for the board doing the most importan
 - **Kill switch on the motor rail only.** Cutting compute power mid-write corrupts the filesystem.
 - **Never parallel the packs** until both are charged and within ~50 mV.
 
-### 1.1 Rock 5B via GPIO header — you've proven this works, now make it safe
+### 1.1 Rock 5B via GPIO header
 
-You're powering it at 5.1 V into the header and it runs. Keep it. Four things to add, because this
-path bypasses the board's input protection entirely:
+The board runs from 5.1 V on the header. This path bypasses the board's input protection entirely,
+so four additions are required:
 
 | Add | Why |
 |---|---|
 | **TVS diode, 5.6–6.0 V, across the rail at the header** | If the XL4016's high-side switch fails short, full pack voltage (12.6 V) lands on the 5 V rail and kills the board. A €0.30 TVS plus the fuse is insurance on a €150 board. **Do this one.** |
 | **1000 µF low-ESR cap at the header** | Motor current spikes sag the pack; the cap rides out the transient |
-| **Both 5 V pins (2 and 4) + at least 4 grounds** (6, 9, 14, 20, 25, 30, 34, 39), short thick wire | Header pins are ~2–3 A each. Both 5 V pins in parallel gets you ~4–5 A ≈ 20–25 W |
-| **Measure voltage *at the header* under load** | Not at the buck output. 4 A through thin Dupont wire drops 300 mV easily — 5.1 V at the buck becomes 4.7 V at the board, which is instability you'll blame on software |
+| **Both 5 V pins (2 and 4) + at least 4 grounds** (6, 9, 14, 20, 25, 30, 34, 39), short thick wire | Header pins are rated ~2–3 A each. Both 5 V pins in parallel gives ~4–5 A ≈ 20–25 W |
+| **Measure voltage *at the header* under load** | Not at the buck output. 4 A through thin Dupont wire drops 300 mV easily. 5.1 V at the buck becomes 4.7 V at the board — instability that presents as a software fault |
 
 **Never connect USB-C power and GPIO power at the same time.**
 
-**Burn-in test before you trust it:** run `stress-ng --cpu 8` plus an NPU load plus a WiFi transfer
+**Burn-in test:** run `stress-ng --cpu 8` plus an NPU load plus a WiFi transfer
 for 30 minutes while the motors drive, and watch for resets and for `dmesg` undervoltage warnings.
-The failure mode you're looking for is a reboot when the motors stall, not steady-state draw.
+The failure mode of interest is a reboot when the motors stall, not steady-state draw.
 
 ---
 
-### 1.2 Component orientation — get these wrong and you lose parts
+### 1.2 Component orientation
 
 **Electrolytic capacitors** (1000 µF, 100 µF)
 
@@ -103,7 +103,7 @@ Reverse one and it heats, vents, and occasionally bursts — they are one of the
 few components that fail loudly.
 
 Voltage rating at least 1.5–2× the rail: **16 V** parts for the 5 V and 6.5 V
-rails, **25 V** if you ever put one directly on the 12.6 V pack.
+rails, **25 V** for anything placed directly on the 12.6 V pack.
 
 **TVS diode** (unidirectional, e.g. SMBJ6.0A)
 
@@ -120,11 +120,11 @@ rails, **25 V** if you ever put one directly on the 12.6 V pack.
 The **band goes to the positive rail**, the unbanded end to ground. It sits
 reverse-biased doing nothing until the rail rises past its breakdown voltage.
 
-Fitting it backwards makes it an ordinary forward-biased diode across your
-supply — a dead short that blows the fuse the instant you power up. Annoying,
-but it tells you immediately rather than silently leaving the board unprotected.
+Fitted backwards it becomes an ordinary forward-biased diode across the supply
+— a dead short that blows the fuse at power-on. Inconvenient, but it fails
+immediately rather than leaving the board silently unprotected.
 
-**Be clear about what TVS + fuse actually buys you.** A 6.0 V TVS does not hold
+**What TVS + fuse actually provides.** A 6.0 V TVS does not hold
 the rail at 6 V. Under a 12.6 V fault it clamps around 10 V while drawing tens of
 amps — and that current is what opens the fuse, in milliseconds. So the board
 sees roughly 10 V for a few milliseconds instead of 12.6 V indefinitely. That is
@@ -132,7 +132,7 @@ damage *limitation*, not a guarantee. Proper protection is an OVP/eFuse IC; this
 is the €0.30 version and it is enormously better than nothing.
 
 **Ceramic 100 nF** — no polarity, fits either way. Always in *parallel* with the
-electrolytic and as close to the load pins as you can get it. The electrolytic
+electrolytic and as close to the load pins as the layout allows. The electrolytic
 handles bulk energy; the ceramic handles the fast edges the electrolytic's ESR
 cannot.
 
@@ -197,7 +197,7 @@ buys almost nothing. Two places genuinely need parts:
 | Each ESP32 VIN | 100 µF | **Worth it.** The ESP32 is the thing that must not reset when the motors stall; its onboard 10 µF is thin for that |
 | LM2596 output | — | **Skip.** The module already has 220 µF there |
 | ESP32 VIN ceramic | — | **Skip.** VIN feeds a *linear* regulator that has its own ceramics. The high-frequency argument applies to switching loads like the TB6612, not to an AMS1117 |
-| MPU-6050 VCC | — | **Optional.** The GY-521 already has one. Belt-and-braces if you want it; it costs nothing |
+| MPU-6050 VCC | — | **Optional.** The GY-521 already has one. Redundant, but costs nothing |
 
 So: **two electrolytics, two ceramics, one TVS, plus a 100 µF per ESP32.** Not
 the shopping list the diagram above might suggest.
@@ -233,7 +233,7 @@ Motors, encoders, IMU, **cliff sensors**, battery. 100–200 Hz hard real-time.
 
 Total: 15 of 16 safe pins + all 4 input-only. Tight but it fits.
 
-**This allocation is identical whether you fit one TB6612FNG or two.** The
+**This allocation is identical for one TB6612FNG or two.** The
 firmware drives one PWM and one direction pair per *side* plus `STBY`; it has no
 idea how many chips are behind those signals. See §2.4.1.
 
@@ -252,7 +252,7 @@ per-side velocity PID is what differential drive actually wants.
 You want to drive on a table. That makes cliff detection the highest-priority
 safety input in the system, and it has a hard deadline.
 
-At 0.3 m/s with a sensor mounted 5 cm ahead of the wheel you have **166 ms** from
+At 0.3 m/s with a sensor mounted 5 cm ahead of the wheel there is **166 ms** from
 detection to the wheel leaving the table. A round trip through USB → serial
 bridge → ROS 2 → Nav2 → back is 50–200 ms on a good day. That doesn't fit.
 
@@ -267,10 +267,10 @@ finds out afterwards.
 - Recovery: back away **in the direction of the sensors still reading "table"**,
   slowly, then stop and report. Never resume automatically.
 - **Cap speed at 0.15 m/s in table mode.** Both detection distance and stopping
-  distance scale with speed, and you have very little of either.
+  distance scale with speed, and there is very little of either.
 - Rear cliff sensors matter as much as the front — the cat game reverses
   constantly.
-- Calibrate the Flying-Fish potentiometers **on your actual table**. Gloss
+- Calibrate the Flying-Fish potentiometers **on the intended surface**. Gloss
   reflects specularly, dark matte absorbs; both fool IR, in opposite directions.
 
 **Known gap:** with all four corner IRs pointing down, the only horizontal
@@ -332,8 +332,8 @@ free-running and 700 mA–1 A stalled at 6 V:
 
 Fine for everything except a *sustained* stall — a carpet edge, a jammed wheel,
 driving into a wall and holding throttle. The TB6612FNG has proper thermal
-shutdown rather than the L293D's gradual fade, so it protects itself; you lose
-the motors until it cools.
+shutdown rather than the L293D's gradual fade, so it protects itself; the
+motors stop until it cools.
 
 **Three mistakes that cost an afternoon:**
 
@@ -398,7 +398,7 @@ slotted disc. Leave it off.
 ```
 
 **AD0 decides the address.** Low = 0x68, which is what the firmware expects. Tie
-it high and the chip answers at 0x69, `WHO_AM_I` fails, and you get
+it high and the chip answers at 0x69, `WHO_AM_I` fails, and the log shows
 `MPU-6050 not responding` with everything apparently wired correctly. Most
 GY-521 boards already pull AD0 low, so leaving it unconnected usually works —
 tying it to GND removes the doubt.
@@ -448,7 +448,7 @@ connector, or a dead sense board all read as "no danger", and the hardware e-sto
 is silently gone. Nothing above the MCUs catches it either — going through the
 SBC is exactly what this wire exists to avoid.
 
-Check continuity when you build it, and treat this as a known limitation. The
+Check continuity at build time and treat this as a known limitation. The
 cheap fix, when the sense firmware next gets attention, is a **heartbeat**: have
 the sense board toggle the line at a few Hz while safe rather than idling, and
 have the drive board fault if the transitions stop. Same wire, same
@@ -552,9 +552,8 @@ the downward-facing ones are on the drive board deliberately (§2.1).
                       └───────────┘
 ```
 
-Most SSD1306 modules run on 3.3 V and have their own pull-ups. If you ever put
-the OLED and something else on this bus, only **one** device should provide
-pull-ups.
+Most SSD1306 modules run on 3.3 V and have their own pull-ups. If anything else joins
+this bus, only **one** device should provide pull-ups.
 
 #### 3.3.4 Buzzer — via NPN, not driven directly
 
@@ -572,7 +571,7 @@ An active buzzer draws 30–50 mA — beyond what an ESP32 pin should source, an
 inductive kick from a passive buzzer is worse. The 100 Ω limits base current;
 the transistor does the work.
 
-If you use a **passive** (magnetic) buzzer, add a flyback diode across it,
+A **passive** (magnetic) buzzer requires a flyback diode across it,
 cathode to +5 V.
 
 #### 3.3.5 Safety line — out to the drive board
@@ -588,12 +587,12 @@ See §2.4.6 for polarity and the fail-open caveat.
 
 Both boards, in the order that keeps each step independently testable:
 
-| # | Step | Testable without | How you know it worked |
+| # | Step | Testable without | Success criterion |
 |---|---|---|---|
 | 1 | Flash both boards | anything | `flash.sh both` reports fw + proto |
 | 2 | MPU-6050 → drive | motors, ROS | `MPU-6050 not responding` stops appearing |
-| 3 | Encoders → drive | motors | tick counts change when you spin a wheel by hand |
-| 4 | Cliff IR → drive | motors | fault flag sets when you lift the corner off the table |
+| 3 | Encoders → drive | motors | tick counts change when a wheel is turned by hand |
+| 4 | Cliff IR → drive | motors | fault flag sets when a corner is lifted off the surface |
 | 5 | Battery divider → drive | motors | reported mV tracks a multimeter |
 | 6 | Ultrasonics → sense | motors | ranges track a hand moved in front |
 | 7 | Safety line | motors | asserting on sense sets the fault on drive |
@@ -625,8 +624,8 @@ still stops.
 
 Also share a ground wire between the two boards alongside the safety line.
 
-**Wiring, polarity, and the fail-open caveat are in §2.4.6.** Read it before you
-rely on this — the line is active-low and released to high-impedance, so a cut
+**Wiring, polarity, and the fail-open caveat are in §2.4.6.** Read it before
+relying on this — the line is active-low and released to high-impedance, so a cut
 wire reads as "no danger".
 
 ---
@@ -693,7 +692,7 @@ esptool.py --port /dev/robot-drive --before default_reset --after hard_reset chi
 
 If it demands a manual BOOT press, the standard fix is a 10 µF cap from EN to GND. The bulletproof
 fix is wiring two Rock 5B GPIOs to EN and IO0 and driving the reset sequence yourself — worth doing
-if you're going to be flashing remotely and often.
+for frequent remote flashing.
 
 **Backup path:** these are ESP32s with WiFi. Keep ArduinoOTA compiled in as a second update route
 for when USB flashing fails at an inconvenient moment.
@@ -710,7 +709,7 @@ comparator boards. Same rule applies to both:
   a 3.3 V GPIO.
 - Trade-off: the IR emitter is dimmer at 3.3 V, so detection range shortens. For cliff sensing at
   2–5 cm that's irrelevant. If the horizontal IR range disappoints, run those two at 5 V through
-  your level converters.
+  the level converters.
 - **D0 only.** A0 (raw analog) is useful once, for diagnostics — if a wheel gives erratic counts,
   scope A0 to see whether the disc is dirty or the gap is misaligned.
 - **LM393 has no hysteresis**, so its output chatters near the threshold. Debounce in firmware:
@@ -725,7 +724,7 @@ Typical slotted disc is 20 slots/rev, single channel:
 - Wheel ≈ 65 mm dia → 204 mm circumference → **~10 mm per tick.** That's genuinely decent linear
   resolution.
 - At 0.3 m/s: ~30 ticks/s per wheel, ~120 interrupts/s total. Nothing for a 240 MHz dual-core.
-- Heading from these is still unreliable on a skid-steer platform — **the MPU-6050 gyro is your
+- Heading from these is still unreliable on a skid-steer platform — **the MPU-6050 gyro is the
   yaw source**, fused via the EKF. This hasn't changed.
 
 ---
@@ -756,8 +755,8 @@ Framed binary, versioned, CRC-checked. Same format both directions, both boards.
 
 **Phase 1 — breadboard, for logic bring-up only.** IMU, encoders, cliff IR, the
 safety line. Everything in the build-order checklist up to step 7. Fast to
-change, and being able to move a wire in five seconds is worth a lot while you
-are still finding out what works.
+change, and moving a wire in five seconds is worth a great deal while the design
+is still unsettled.
 
 **Phase 2 — soldered, before the robot ever moves.** Vibration plus spring
 contacts produces intermittent faults that look exactly like software bugs.
@@ -768,7 +767,7 @@ Two separate reasons, and the second is the one people miss:
 
 - A breadboard contact is **10–50 mΩ**, and it degrades with use. Two or three
   contacts in the motor path at 2 A is a few hundred millivolts lost as heat, in
-  a spring you cannot inspect.
+  a spring that cannot be inspected.
 - **A 100 nF on a breadboard is not a 100 nF.** Lead length plus two spring
   contacts adds roughly 20–30 nH, which drags its self-resonance down from tens
   of MHz to around 3 MHz. Above that it is an inductor. You added the ceramic
@@ -778,7 +777,7 @@ Two separate reasons, and the second is the one people miss:
 
 ### 8.2 Where each capacitor physically goes
 
-Only the parts §1.3 says to fit — the rest is already on your modules.
+Only the parts §1.3 lists as required — the rest is already on the modules.
 
 | Cap | Mount it | Lead length |
 |---|---|---|
@@ -786,9 +785,9 @@ Only the parts §1.3 says to fit — the rest is already on your modules.
 | 1000 µF + 100 nF + TVS at Rock 5B | Small adapter board on the GPIO header | as short as physically possible |
 | 100 µF at each ESP32 | Carrier board, at the VIN/GND header pins | few cm is fine |
 
-The rule everywhere: **ceramic nearest the pins, electrolytic behind it.** If you
-have to choose which one gets the good position, the ceramic wins — the
-electrolytic still works from a few centimetres away, the ceramic does not.
+The rule everywhere: **ceramic nearest the pins, electrolytic behind it.** Where
+only one can have the better position, the ceramic takes it — the electrolytic
+still works from a few centimetres away, the ceramic does not.
 
 ### 8.3 Carrier board layout
 
@@ -813,8 +812,7 @@ Perfboard, not a custom PCB. Roughly 7 × 9 cm:
 ```
 
 **Female headers for both modules**, so the ESP32 and the driver stay removable —
-you will damage one eventually, and desoldering a 30-pin module you cooked is a
-bad afternoon.
+modules do get damaged, and desoldering a 30-pin part is a bad afternoon.
 
 **Screw terminals for anything carrying motor current.** Dupont connectors are
 crimped onto 26–28 AWG and rated around 0.5 A; they are for signals.
@@ -831,8 +829,8 @@ crimped onto 26–28 AWG and rated around 0.5 A; they are for signals.
 | Every signal line | mA | 26–28 AWG (Dupont fine) |
 
 The docs already warn that 4 A through thin Dupont drops 300 mV easily. That is
-5.1 V at the buck arriving as 4.7 V at the Rock 5B — instability you will spend a
-day blaming on software.
+5.1 V at the buck arriving as 4.7 V at the Rock 5B — instability that presents as
+a software fault.
 
 
 - **Solder before the robot moves.** Breadboard jumpers plus vibration produce intermittent faults
@@ -843,7 +841,7 @@ day blaming on software.
 - **Route motor wires away from sensor wires**, twist each motor pair. I²C is the most
   noise-vulnerable bus on the robot and the MPU-6050 sits on it.
 - **MPU-6050 flat, near the centre of rotation, on foam.** Rigid mounting couples motor vibration
-  into the gyro, and gyro yaw is load-bearing for your odometry.
+  into the gyro, and gyro yaw is load-bearing for odometry.
 - **Rock 5B cooling must breathe.** RK3588 throttles hard under sustained NPU load. Don't bury it
   under the battery pack.
 - **Batteries low and centred.** A top-heavy skid-steer robot tips during hard direction changes,

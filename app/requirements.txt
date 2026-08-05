@@ -9,3 +9,4 @@ fastapi==0.115.6
 # fails — so telemetry, audio and teleop all break while the app looks healthy.
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
+httpx==0.27.2

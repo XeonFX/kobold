@@ -112,14 +112,35 @@
 
     <!-- =========================================================== drive -- -->
     <section x-show="tab === 'drive'">
-      <div class="viewport">
-        <img :src="videoSrc" alt="robot camera" x-show="!videoErr" @error="videoErr = true">
-        <div class="badge" x-show="!videoErr">LIVE</div>
-        <div class="offline" x-show="videoErr">
+      <!-- Camera and joystick occupy one element rather than two stacked, so
+           the drive tab fits a phone without scrolling. The stick sits over the
+           video; `liveBehind` decides whether the video renders at all. -->
+      <div class="viewport" :class="{ 'has-stick': true }">
+        <img :src="videoSrc" alt="robot camera"
+             x-show="liveBehind && !videoErr" @error="videoErr = true">
+        <div class="badge" x-show="liveBehind && !videoErr">LIVE</div>
+        <div class="offline" x-show="liveBehind && videoErr">
           <div style="font-size:26px;opacity:.5">⃠</div>
           <div>camera offline</div>
         </div>
+
+        <!-- Always mounted, never re-created: a canvas that gets torn down and
+             rebuilt loses its 2d context and the pointer capture with it. -->
+        <div class="stick-wrap overlay" :class="{ 'no-video': !liveBehind }">
+          <canvas x-ref="stick" class="stick"
+                  @pointerdown.prevent="stickDown($event)" @pointermove="stickMove($event)"
+                  @pointerup="stickUp()" @pointercancel="stickUp()" @pointerleave="stickUp()"></canvas>
+        </div>
       </div>
+
+      <label class="switch">
+        <div class="label">
+          <b>Live view behind controls</b>
+          <span>Off shows the joystick alone — useful on a slow link, or when the
+                picture is more distraction than help.</span>
+        </div>
+        <input type="checkbox" x-model="liveBehind">
+      </label>
 
       <!-- Proximity radar. Distances drawn spatially rather than listed as
            four numbers, so you read the situation instead of decoding it. -->
@@ -133,14 +154,6 @@
         </div>
       </div>
 
-      <div class="card">
-        <header><span>manual control</span></header>
-        <div class="stick-wrap">
-          <canvas x-ref="stick" class="stick"
-                  @pointerdown.prevent="stickDown($event)" @pointermove="stickMove($event)"
-                  @pointerup="stickUp()" @pointercancel="stickUp()" @pointerleave="stickUp()"></canvas>
-        </div>
-      </div>
 
       <label class="switch">
         <div class="label">

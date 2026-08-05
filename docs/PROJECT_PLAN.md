@@ -1,7 +1,7 @@
 # Kobold — Project Plan
 
-A 4WD indoor robot that navigates a room (and a table), finds objects you show it as photos, plays
-chase-and-flee with a cat, and talks to you through a phone app. Everything on the robot runs in
+A 4WD indoor robot that navigates a room (and a table), finds objects presented to it as photos, plays
+chase-and-flee with a cat, and is controlled through a phone app. Everything on the robot runs in
 Docker and is updateable over the network; the microcontrollers are flashed over USB from the SBC.
 
 - **Brain:** Radxa Rock 5B (RK3588S, 8 GB, 6 TOPS NPU)
@@ -51,30 +51,30 @@ checksum-pinned and exercised with the official RKLLM 1.3.0 runtime on this Rock
 HTTP endpoint currently serves text/tool requests; the separately validated vision encoder still
 needs to be connected to that API. §5.1–5.2.
 
-**2. Model conversion needs x86_64, which you don't have.**
+**2. Model conversion needs x86_64, which is not available locally.**
 `rknn-toolkit2` and `rkllm-toolkit` ship as `linux_x86_64` wheels only. Plan: pull pre-converted
 files from HuggingFace, with Rosetta-backed x86 Docker or a €0.50/hr cloud VM as the fallback. The
-version-matching trap in §5.2 is the thing that will actually bite you.
+version-matching trap in §5.2 is the one that causes real failures.
 
-**3. Power via the GPIO header works — you've proven it.** 5.1 V from the HW-674 into header pins 2
+**3. Power via the GPIO header works — verified.** 5.1 V from the HW-674 into header pins 2
 and 4. That's now the primary path and the PD source module is off the shopping list. But it bypasses
 the board's input protection, so add a TVS diode, a bulk cap, and a proper load test (WIRING §1.1).
 
-**4. The motor shield works at 8 V — and that tells you exactly what's wrong with it.** You're
-compensating for the L293D's ~2 V drop by raising the supply. It works, and it's costing you heat
+**4. The motor shield works at 8 V — which is itself the diagnosis.** The supply is raised to
+compensate for the L293D's ~2 V drop. It works, at the cost of heat
 and battery. §3.1 has the numbers and what to do about it.
 
 **5. Table driving makes cliff detection the highest-priority input in the system.** All four corner
-IRs face down. At 0.3 m/s you have ~166 ms from edge detection to a wheel leaving the table, and a
+IRs face down. At 0.3 m/s there is ~166 ms from edge detection to a wheel leaving the table, and a
 round trip through the SBC is 50–200 ms. So cliff sensors wire directly to the drive MCU and stop
 the motors in under a millisecond. This drove a real change to the board split (§1.3).
 
 **6. Stereo vision is off the table — buy the lidar.** I was wrong about this in rev 2. The ROCK 5B
-has **one** 4-lane MIPI CSI connector (plus one DSI), not two, and your two IMX219 modules have
+has **one** 4-lane MIPI CSI connector (plus one DSI), not two, and the two IMX219 modules have
 visibly different lenses, so their intrinsics won't match. Both blockers are independent and each
 one alone kills the €0 stereo plan. Navigation is now **mono depth on the NPU + a €70 lidar**. §6.
 
-**7. Polish changes the RAM budget more than you'd expect.** Polish Whisper fine-tunes are only
+**7. Polish changes the RAM budget substantially.** Polish Whisper fine-tunes are only
 distributed as **f16** — quantising them wrecks Polish transcription — so ASR costs 0.5–1.5 GB
 instead of the ~60 MB an English `base` would. That collides with the LLM in 8 GB and may push voice
 onto the Zero 3W after all. §7.
@@ -98,7 +98,7 @@ taking the tier below it down.
 | **2 — Perception** | Rock 5B NPU | 5–30 Hz | YOLO, embedding match, VSLAM or place recognition | Reporting no detections |
 | **3 — Cognition** | Rock 5B NPU | 0.1–1 Hz | Qwen3.5 + Hermes: goal selection, conversation, tool calls | Falling back to idle |
 
-Tier −1 is new in this revision and it's the one that lets you put the robot on a table. The
+Tier −1 is new in this revision and is what makes table operation possible. The
 emergency stop path contains **no software above the two microcontrollers** — the Rock 5B can be
 rebooting, Docker can be pulling images, the LLM can be confidently wrong, and the robot still stops
 at the table edge.
@@ -145,7 +145,7 @@ for the servos and PIR later.
 
 The second reason still stands: **HC-SR04 echo timing is measured in microseconds** and would
 otherwise share a core with motor PWM and encoder interrupts. Splitting means an interrupt storm
-during a hard turn can't corrupt the distance reading you need *during* a hard turn.
+during a hard turn cannot corrupt the distance reading required *during* a hard turn.
 
 ---
 
@@ -166,7 +166,7 @@ during a hard turn can't corrupt the distance reading you need *during* a hard t
 
 **Storage.** PM991 256 GB (confirmed 2280, no adapter needed) in the Rock 5B — chosen for power,
 not capacity: ~2.5 W under load versus 6–7 W for the PM9A1, which is real battery minutes. OS stays
-on the eMMC (recoverable with a card reader if you brick it); `/var/lib/docker` and `/data` go on
+on the eMMC (recoverable with a card reader after a bad flash); `/var/lib/docker` and `/data` go on
 the NVMe. PM9A1 2 TB goes in a USB 3 enclosure on the Odroid as the rosbag archive.
 
 **WiFi.** Radxa A8 in the E-key slot, antennas confirmed present. AX210 is the upgrade path if the
@@ -184,7 +184,7 @@ Your 8 V hack works because the L293D drops ~1.5–2 V regardless of supply volt
 saw ~4 V; at 8 V they see ~6 V. You bought back the missing torque with brute force.
 
 The cost is heat. The L293D's dissipation is roughly `I × 2 V` per active channel, and raising the
-voltage raises the current too, so you're now burning **more** power in the chip than before. L293D
+voltage raises the current too, so **more** power is burned in the chip than before. L293D
 thermal shutdown fades in gradually — the robot gets sluggish before it stops, which is a confusing
 failure to debug.
 
@@ -202,9 +202,9 @@ Same wheel voltage, a quarter of the waste, double the current headroom, and no 
 
 1. **Heatsink the L293Ds** and measure chip temperature after 10 minutes of driving. Above ~70 °C
    it's already throttling.
-2. **Check your motor voltage rating.** The chassis motors are commonly 3–6 V. If they're 6 V,
+2. **Check the motor voltage rating.** The chassis motors are commonly 3–6 V. If they are 6 V,
    running them at 8 V supply is fine intermittently but will shorten brush life. With a TB6612 at
-   6.5 V you get the same wheel speed without over-driving them.
+   6.5 V gives the same wheel speed without over-driving them.
 
 Wire a **7.5 A fuse and a physical kill switch on the motor rail**, upstream of everything.
 
@@ -241,9 +241,9 @@ agree.
 **Consequence of the all-down corner layout:** the sides have **no close-range sensing** except the
 side ultrasonics, whose 15° cone and 2 cm minimum range leave a real gap. Skid steer sweeps sideways
 during every turn. Either keep turns slow near obstacles, or add 2 more IR modules (~€4) facing left
-and right. Recommended once you're driving in cluttered rooms.
+and right. Recommended for driving in cluttered rooms.
 
-**Sensor complementarity is why you want both types:** ultrasonics are defeated by glass and
+**Both sensor types are needed because they fail differently:** ultrasonics are defeated by glass and
 soft/angled surfaces; IR is defeated by dark matte and glossy surfaces. Each covers the other's
 blind spots. Neither sees a table edge from a horizontal mount, which is why the corner sensors
 point down.
@@ -259,16 +259,16 @@ top-balancing chore). Two 3S1P packs paralleled after their BMSes into a common 
 split into separate rails at the regulator stage.
 
 Before first parallel connection, charge both individually and confirm they're within ~50 mV, or
-you'll get a large circulating current the moment you join them.
+a large circulating current flows the moment they are joined.
 
-**Charging is already covered by your bench equipment** — no charger purchase needed. The KORAD
+**Charging is already covered by existing bench equipment** — no charger purchase needed. The KORAD
 KA3005D (0–30 V / 0–5 A linear) *is* a CC/CV source, which is the whole of Li-ion charging:
 
 | Mode | Set | Notes |
 |---|---|---|
 | Full charge | **12.6 V**, limit 1.5 A | ~0.45C. Maximum runtime |
 | Daily / storage | **12.0 V**, limit 1.5 A | 4.0 V/cell ≈ 85%. Roughly **doubles cycle life** — use this most of the time |
-| Done when | current tapers to ~0.3 A | C/10. The live readout is how you know |
+| Done when | current tapers to ~0.3 A | C/10, observed on the live readout |
 
 Your spare fixed 12 V supply does the daily-charge row on its own, which makes it the better routine
 charger of the two — 85% is where Li-ion wants to live.
@@ -335,11 +335,11 @@ actually matters here is instruction-following under a long tool schema, *not* i
 arguments, and visual grounding on low-resolution robot camera frames. No headline benchmark
 measures any of those.
 
-Qwen3.5-2B is now the default, but still **build a 30-prompt eval from your own robot** — real photos
-from your actual camera, your actual tool list, your actual room, **and your prompts in Polish** —
+Qwen3.5-2B is now the default, but a **30-prompt eval built from this robot** is still required — real
+photos from its camera, its tool list, its room, **and prompts in Polish** —
 and score 2B vs 4B vs Gemma 4 on that. It's an afternoon of work and it's the only benchmark that
-describes your robot. RKLLM supports Gemma 4, SmolVLM, MiniCPM-V and InternVL3 too, so switching is
-cheap if the eval surprises you.
+describes this robot. RKLLM supports Gemma 4, SmolVLM, MiniCPM-V and InternVL3 too, so switching is
+cheap if the eval produces a surprise.
 
 **Include Gemma 4 in that eval specifically for Polish** — Qwen is Chinese/English-centric by
 training priority and Gemma is generally stronger multilingually. See §7.6; at 2B, language ability
@@ -352,7 +352,7 @@ conversions or 4B builds.
 
 **Start at 2B, not 4B.** 4B at w8a8 is ~4.5 GB of weights plus KV cache against 8 GB shared with
 ROS 2, Docker, and the camera pipeline. 2B is ~2.2 GB and leaves headroom. Cap context at
-**4096–8192** either way — the 262 K window is irrelevant here and the KV cache would eat your RAM.
+**4096–8192** either way — the 262 K window is irrelevant here and the KV cache would consume the RAM budget.
 Configure zram plus NVMe swap; the OOM killer should never be what ends a mission.
 
 If Qwen3.5 keeps Qwen3's hybrid thinking toggle, **disable thinking for routine tool calls** and
@@ -363,7 +363,7 @@ frontier model in the cloud for hard problems; offline it falls back to the loca
 
 ### 5.2 No x86? Use pre-converted models — carefully
 
-This is a genuine constraint and it's workable. Three routes, in the order you should try them:
+This is a genuine constraint and it is workable. Three routes, in recommended order:
 
 **Route A — pre-converted from HuggingFace (primary).**
 
@@ -398,13 +398,13 @@ which is why community uploads put the version in the filename (`...-rk3588-rkll
    .rkllm file version   ⟷   librkllmrt.so in the container   ⟷   rknpu kernel driver on the host
 ```
 
-Get this wrong and you get baffling failures rather than a clear error. Note that many published
-models target older runtimes (1.1.4, 1.2.1) — so you may need to pin an **older** `librkllmrt.so`
+A mismatch produces baffling failures rather than a clear error. Many published
+models target older runtimes (1.1.4, 1.2.1), so pinning an **older** `librkllmrt.so` may be necessary
 than the current 1.3.0 to use them. Pin all three in the model manifest and print all three at
 container startup, so a mismatch is the first line in the log instead of a two-hour debugging
 session.
 
-**Route B — x86 on your Apple Silicon Macs.** Both Macs are ARM, so there are two sub-routes with
+**Route B — x86 emulation on Apple Silicon.** Both Macs are ARM, so there are two sub-routes with
 opposite failure modes. Try them in this order.
 
 **B1 — Docker Desktop with Rosetta (fast, may hit instruction gaps).** Enable *Use Rosetta for
@@ -417,11 +417,11 @@ docker run --rm --platform linux/amd64 -v "$PWD:/w" -w /w \
 
 Rosetta *translates* rather than emulates, so this is far faster than a full x86 VM. The catch:
 Rosetta has historically not covered AVX instructions, and x86 PyTorch builds use them. An
-**illegal-instruction / SIGILL crash** means you've hit that — it isn't a broken install. Fall
+An **illegal-instruction / SIGILL crash** indicates that limit, not a broken install. Fall
 through to B2.
 
 **B2 — Parallels x86 VM (slow, but complete).** Parallels Desktop 20.2+ added x86_64 emulation on
-Apple Silicon, so you can genuinely run an x86_64 Linux guest. Two things to know before spending an
+Apple Silicon, so an x86_64 Linux guest is genuinely possible. Two things to know before spending an
 evening on it: it needs **Pro/Business/Enterprise** (not the standard edition), and Parallels
 themselves ship it as a technology preview with heavy performance caveats. But it's full emulation,
 so AVX works where Rosetta doesn't.
@@ -431,19 +431,19 @@ slowly. Conversion is a one-off batch job, so slow-but-works is entirely accepta
 
 **Route C — a cloud VM (the reliable one).**
 Conversion is a one-off per model. A spot x86 VM at ~€0.50/hr, or an Oracle/GCP free-tier box, does
-it in an hour. **Set this up even if Route A covers you today** — the moment you want to fine-tune a
-SigLIP variant on your own objects, or a new model lands before the community converts it, you'll
-need it. Depending on strangers' uploads for your entire model supply is a fragile place to be.
+it in an hour. **Set this up even if Route A suffices today** — fine-tuning a SigLIP variant on
+custom objects, or adopting a model before the community converts it, both require it. Depending on
+third-party uploads for the entire model supply is a fragile position.
 
 ### 5.3 Perception model roles
 
-Because Qwen3.5 is multimodal you *could* route everything through the VLM. Don't — far too slow for
+Because Qwen3.5 is multimodal, everything *could* route through the VLM. It should not — far too slow for
 anything reactive. Fast path and slow path:
 
 | Job | Model | Rate | Why |
 |---|---|---|---|
 | Generic objects + **cat** | YOLO11n → RKNN | 20–30 Hz | COCO includes `cat` (class 15). The cat game's real-time tracker |
-| "Is this the mug from my photo?" | SigLIP/CLIP encoder → RKNN | ~50 Hz on crops | Cosine similarity against your reference photo's embedding. Handles *specific instances*, which YOLO's 80 fixed classes cannot |
+| "Is this the mug from my photo?" | SigLIP/CLIP encoder → RKNN | ~50 Hz on crops | Cosine similarity against the reference photo's embedding. Handles *specific instances*, which YOLO's 80 fixed classes cannot |
 | Visual place recognition | Same embeddings, whole frames | 1 Hz | Powers topological navigation and "where am I?" |
 | Depth (if going mono, §6) | Depth Anything V2 small → RKNN | 5–10 Hz | Relative depth → costmap, scaled by wheel odometry |
 | Novel objects, scene understanding, chat, planning | **Qwen3.5-2B/4B** → RKLLM | 0.1–1 Hz | The slow, smart path — on candidates and on user requests |
@@ -474,7 +474,7 @@ cores 5–7; concurrent ASR only reduced measured detector throughput from 60.4 
 6. Confirmed → approach, stop at ~50 cm, announce in the app with a photo, record the pose so
    "where's my mug?" is answerable later from memory.
 
-Embeddings are fast but shallow; the VLM is smart but slow. Chaining them means you pay for the
+Embeddings are fast but shallow; the VLM is capable but slow. Chaining them pays for the
 smart one only when something interesting shows up.
 
 ---
@@ -485,13 +485,13 @@ smart one only when something interesting shows up.
 
 Two independent blockers, either of which is fatal on its own:
 
-**Blocker 1 — one CSI connector.** You're right about your board. The ROCK 5B has **one four-lane
+**Blocker 1 — one CSI connector.** The ROCK 5B has **one four-lane
 MIPI CSI** connector plus one DSI. (The 5B**+** is the variant with two CSI connectors; that's the
 source of the confusion, and my rev 2 claim was wrong.)
 
 Radxa's docs do note the 4-lane connector "can be split into 2× two-lane" — but they document no
-overlay for it, you'd need a splitter adapter board (community designs exist, none official), and
-you'd be writing a custom device tree overlay for a dual-sensor configuration nobody publishes. That
+overlay for it, a splitter adapter board would be required (community designs exist, none official), and
+it would mean writing a custom device tree overlay for a dual-sensor configuration nobody publishes. That
 is a research project with an uncertain ending, not a build step.
 
 **Blocker 2 — mismatched optics.** Your instinct is correct and it's the deeper problem. Stereo
@@ -517,13 +517,13 @@ It won't close large loops and metric accuracy is mediocre, but it runs on the N
 CPU, needs no calibration rig, and answers "is there a chair one metre ahead" perfectly well. It
 also still sees table tops and chair seats — the 3D advantage that made stereo attractive.
 
-**Add the lidar (€70) — this is now clearly worth buying.** `slam_toolbox` plus Nav2 gives you real
+**Add the lidar (€70) — this is now clearly worth buying.** `slam_toolbox` plus Nav2 gives real
 metric SLAM, persistent maps, and localisation that works in the dark, against blank white walls,
 and over plain carpet. Vision degrades badly in exactly those conditions, and a dim room with plain
 walls is a normal room. With the €0 path gone, this is the best value purchase in the project.
 
 The combination is genuinely good: **lidar for rock-solid localisation, mono depth for 3D obstacles
-the lidar plane misses.** That's most of what stereo would have given you.
+the lidar plane misses.** That covers most of what stereo would have provided.
 
 **Build the topological place graph regardless** (named places, image embeddings, VLM descriptions,
 rough edges between them). It's how the LLM should reason about locations no matter what's driving
@@ -536,14 +536,14 @@ You have one CSI slot, so pick one — **measure, don't guess**:
 > Tape a ruler to a wall. Photograph it with each module from exactly 1 m. Compare the visible
 > width. Wider field of view wins for the robot; the other becomes the room-node camera.
 
-FOV matters more than resolution here — you want to see the chair leg beside you, not read a book
+FOV matters more than resolution here — the priority is seeing the chair leg alongside, not reading a book
 across the room. Run whichever wins at 1280×720 @ 30 fps. The IMX415 (4K) also fits this slot but is
 heavier, smears more under motion, and costs memory bandwidth the NPU wants.
 
-### If you later want stereo properly
+### Adding stereo properly, later
 
 In rough order of sanity: buy **two matched USB webcams** (~€30, no CSI limits, no overlay work — the
-easy path); or buy an **OAK-D Lite** (~€150, does depth on-device and saves your CPU entirely); or
+easy path); or buy an **OAK-D Lite** (~€150, does depth on-device and consumes no host CPU); or
 buy two matched IMX219 modules plus a 2×2-lane splitter and write the overlay. Only the last one is
 free, and it isn't really.
 
@@ -554,11 +554,11 @@ free, and it isn't really.
 ### 7.1 Polish makes this a RAM problem, not a placement problem
 
 Start on the Rock 5B. But **Polish may force voice onto the Zero 3W after all**, and it's worth
-understanding why before you build it, because it's a budget question rather than a latency one.
+understanding why before building it, because it is a budget question rather than a latency one.
 
 The reason: **Polish Whisper fine-tunes are distributed as f16 only.** The maintainer of the
 whisper.cpp-ready builds notes that `q5_0` quantisation degraded Polish transcription to garbled
-output, so quantised versions aren't published. English `base` at q5 would have cost you ~60 MB.
+output, so quantised versions are not published. English `base` at q5 costs ~60 MB.
 Polish `small` at f16 costs ~500 MB, and `medium` ~1.5 GB.
 
 | Component | RAM |
@@ -571,13 +571,13 @@ Polish `small` at f16 costs ~500 MB, and `medium` ~1.5 GB.
 | OS + Docker + camera pipeline | ~1.0 GB |
 | **Total** | **~6.1 GB of 8 GB** |
 
-That fits. Swap in the 4B model (~5.0 GB with KV) and you're at ~8.4 GB — **it does not fit.** Swap
+That fits. The 4B model (~5.0 GB with KV) brings the total to ~8.4 GB — **it does not fit.** Swap
 in `medium-pl` too and it's hopeless.
 
 **Decision rule:**
 
 - **Qwen3.5-2B + whisper small-pl → both on the Rock 5B.** Simplest, lowest latency. Start here.
-- **If you need the 4B model** (see §7.6 — Polish is a real argument for it) **or `medium-pl`
+- **If the 4B model is required** (see §7.6 — Polish is a real argument for it) **or `medium-pl`
   accuracy → move voice to the Zero 3W.**
 
 The key realisation: **whisper.cpp and Piper are pure CPU work.** The RK3566's lack of RKLLM support
@@ -630,7 +630,7 @@ same size will beat it comfortably. Use the fine-tune.
 
 ### 7.4 The mic array — buy USB, not a HAT
 
-When you're ready for 4–6 mics:
+For a 4–6 mic array:
 
 **Get a USB mic array with onboard DSP** — ReSpeaker USB Mic Array v2.0 (4 mics, hardware
 beamforming, AEC, and direction-of-arrival over USB HID) or a MiniDSP UMA-8 (7 mics). ~€70–90.
@@ -648,14 +648,14 @@ chassis sounds terrible.
 ### 7.5 Room nodes — what the Zero 3W is actually for
 
 This is where the Zero 3W earns its place: a **fixed node in the corner of the room** with its CSI
-camera and a cheap USB mic. It gives you:
+camera and a cheap USB mic. It provides:
 
 - A **second viewpoint** — the robot can find the cat even when the cat isn't in its own field of
   view. Directly useful for the cat game.
 - A **second listening point**, so "hey robot" works from anywhere in the room rather than only
   within a few metres of the robot.
 - Local YOLO on its own NPU, so it publishes *detections* over MQTT rather than streaming raw video
-  and saturating your WiFi.
+  and saturating the WiFi link.
 
 The Pi Zero 2W can be a second, dumber node (stream only, no NPU). This is a Phase 8+ project, but
 it's the right home for both boards.
@@ -686,7 +686,7 @@ than any benchmark score.
    WiFi is up. Best quality, needs connectivity.
 
 **Test this early — in Phase 6, not Phase 8.** If the local model's Polish is unusable, it changes
-your model choice, your RAM budget, and your board layout. That's a bad thing to discover late.
+model choice, RAM budget, and board layout. That is an expensive thing to discover late.
 
 ---
 
@@ -709,15 +709,15 @@ What the host *does* have to provide is the hard part, and Radxa's image already
 | **NPU** (`rknpu` driver) | The whole project depends on it. Mainline RK3588 support does not include a usable NPU driver |
 | **MIPI CSI** camera overlays | Sensor drivers and device tree overlays are vendor-supplied |
 | **Hardware H.264 encode** (`rkmpp`) | Needed for the app video stream without burning CPU |
-| **Mali GPU** (`libmali`) | OpenCL, if you ever want SGBM depth on the GPU |
+| **Mali GPU** (`libmali`) | OpenCL, for SGBM depth on the GPU |
 
 So the 6.1.84 BSP kernel is not a compromise here — it is **the correct kernel** for this hardware,
-and swapping to a mainline-kernel Ubuntu image would cost you the NPU. Don't churn the OS.
+and swapping to a mainline-kernel Ubuntu image would cost the NPU. Do not churn the OS.
 
 **Change 1: drop the desktop.** This one is quantified rather than stylistic. KDE Plasma plus
 SDDM costs roughly **0.8–1.5 GB of RAM**, and §7.1's budget already lands at ~6.1 GB of 8 GB with
-the 2B model and Polish ASR resident. Adding a desktop takes you to ~7.5 GB and the OOM killer
-becomes the thing that ends your missions.
+the 2B model and Polish ASR resident. A desktop pushes that to ~7.5 GB, at which point the OOM
+killer becomes the usual cause of a failed mission.
 
 ```bash
 sudo systemctl set-default multi-user.target
@@ -727,8 +727,8 @@ sudo reboot
 ```
 
 Reversible any time with `systemctl set-default graphical.target`, so there is no downside to a
-headless robot you reach over SSH and the web app. If you want a GUI for `rviz2` or Foxglove, run
-it on your Mac against the robot's `foxglove_bridge` — that is the better workflow regardless.
+headless robot reached over SSH and the web app. Run `rviz2` or Foxglove on a workstation against
+the robot's `foxglove_bridge` — that is the better workflow regardless.
 
 **Change 2: verify the NPU driver version before Phase 4.** This is the single most likely source
 of baffling failures later, and it costs one command now:
@@ -738,15 +738,15 @@ sudo cat /sys/kernel/debug/rknpu/version    # e.g. "RKNPU driver: v0.9.8"
 dmesg | grep -i rknpu
 ```
 
-Write that number in `models/manifest.yaml`. The `librknnrt.so` you ship inside the perception and
+Write that number in `models/manifest.yaml`. The `librknnrt.so` shipped inside the perception and
 LLM containers must be compatible with **this** driver, and a `.rkllm` file adds a third version to
-the chain (§5.2). Three things must agree, and only one of them lives in a container you control.
+the chain (§5.2). Three things must agree, and only one of them lives inside a container.
 
 **Other Debian-12-specific notes:**
 
 - Docker: use Docker's own `docker-ce` repo, not Debian's `docker.io` package — the packaged
-  version lags and you want current `compose` v2.
-- Python 3.11 on the host. Irrelevant to the bridge, which runs in a container, but relevant if you
+  version lags behind current `compose` v2.
+- Python 3.11 on the host. Irrelevant to the bridge, which runs in a container, but relevant when
   run `tools/gen_protocol.py` or `esptool` directly on the robot.
 - `udev`, `dialout` group, and the rules in `scripts/99-kobold.rules` work identically to Ubuntu.
 - Radxa images ship `rknn_server` / `restart_rknn.sh` for NPU debugging. Handy in Phase 4.
@@ -773,13 +773,13 @@ long-running source of misery.
 `/data` on the NVMe holds models, maps, the targets DB, and a ring-buffered rosbag.
 
 ⚠️ **Number one gotcha:** `librknnrt.so` / `librkllmrt.so` in the container must match the `rknpu`
-kernel driver on the host **and** the version your `.rkllm` file was converted with. Print all three
+kernel driver on the host **and** the version the `.rkllm` file was converted with. Print all three
 at startup.
 
 ### 8.3 ESP32 ↔ ROS 2
 
 **Plain framed serial plus a bridge node — not micro-ROS.** micro-ROS couples ESP-IDF to a specific
-ROS 2 distro, upgrades are brittle, and when it breaks you're debugging XRCE-DDS instead of your
+ROS 2 distro, upgrades are brittle, and a failure means debugging XRCE-DDS instead of the
 robot. A versioned CRC-framed protocol is a few hundred lines and debuggable with a serial monitor.
 
 ```
@@ -790,7 +790,7 @@ robot. A versioned CRC-framed protocol is a few hundred lines and debuggable wit
   To sense:    /buzzer  /oled/text
 ```
 
-**udev rules keyed to VID/PID** — and note that CH340 clones often share serial numbers, so you may
+**udev rules keyed to VID/PID** — note that CH340 clones often share serial numbers, so it may
 need to match physical USB port paths and always plug each board into the same port. Label the ports
 (WIRING §5). The failure mode — motor commands sent to the ultrasonic board — is as bad as it sounds.
 
@@ -886,7 +886,7 @@ A state machine (ROS 2 node or BehaviorTree.CPP), **not** the LLM. The LLM only 
 - **Never corner the cat.** Large bbox plus walls on multiple sides → exit to RESET and back away.
 - **Wheel guards** before the first session. Exposed wheels, paws, tails.
 - Buzzer quiet — piezo resonance is unpleasant at feline hearing range.
-- Watch the first several sessions in person. Some cats love this and some are terrified, and you'll
+- Supervise the first several sessions. Some cats engage and some are frightened, and the difference
   know within a minute.
 
 ---
@@ -896,7 +896,7 @@ A state machine (ROS 2 node or BehaviorTree.CPP), **not** the LLM. The LLM only 
 | Phase | Goal | Done when | Est. |
 |---|---|---|---|
 | **0** | Rock 5B: **drop the desktop** (§8.1), NVMe, Docker, WiFi + fallback AP, TVS/cap on the power rail, 30-min load test | Survives `stress-ng` + NPU + motors stalling, no resets; `free -h` shows >7 GB available | 1 wk |
-| **1** | Drive ESP32: motors, encoders, IMU, serial protocol, watchdog | Teleop works; motors stop 300 ms after you kill the bridge | 1–2 wk |
+| **1** | Drive ESP32: motors, encoders, IMU, serial protocol, watchdog | Teleop works; motors stop 300 ms after the bridge is killed | 1–2 wk |
 | **2** | **Cliff safety + sense ESP32:** cliff reflex, safety line, full sensor ring, power rails, fuses | **Robot drives to a table edge and stops, ten times out of ten** | 1–2 wk |
 | **3** | Odometry + EKF: gyro/encoder fusion, track-width calibration | Commanded 360° turn lands within ~10° | 1 wk |
 | **4** | Camera + NPU: FOV test, RKNN in Docker, YOLO at 20+ Hz, video in the app | App shows live video with bounding boxes | 1–2 wk |
@@ -966,7 +966,7 @@ kobold/
 4. **Which camera has the wider FOV?** Measure both against a ruler at 1 m (§6). One CSI slot, so
    the winner goes on the robot and the loser becomes the room-node camera.
 5. **Motor voltage rating** on the chassis motors — determines whether 8 V is abuse (§3.1).
-6. **Encoder slots per revolution** — count the slots on the disc; it sets your odometry scale.
+6. **Encoder slots per revolution** — count the slots on the disc; it sets the odometry scale.
 7. **Is the local 2B's Polish good enough?** Test in Phase 6. Drives model size, RAM, and whether
    voice moves to the Zero 3W (§7.6).
 

@@ -1,7 +1,7 @@
 # kobold
 
-A 4WD indoor robot that navigates a room (and a table), finds objects you show
-it as photos, plays chase-and-flee with a cat, and talks to you through a phone
+A 4WD indoor robot that navigates a room (and a table), finds objects presented
+to it as photos, plays chase-and-flee with a cat, and is controlled through a phone
 app. Everything on the robot runs in Docker; the microcontrollers are flashed
 over USB from the SBC.
 
@@ -91,7 +91,7 @@ firmware/                  PlatformIO, three ESP32 DevKit V1 boards
   src/drive/               Motors, encoders, IMU, battery, cliff reflex
   src/sense/               Ultrasonics, IR, buzzer, OLED, safety line
   src/head/                Pan/tilt servos, PIR  (Phase 5)
-  test/native/             Codec tests that run on your laptop
+  test/native/             Codec tests that run on a development machine
 
 ros2_ws/src/
   kobold_bridge/          Serial ↔ ROS 2, version handshake, simulator
@@ -158,7 +158,7 @@ IMX219 camera. Full inventory and reasoning in [docs/COMPONENTS.md](docs/COMPONE
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: run `make check`
-before opening a PR, and if you change `protocol.yaml`, run `make protocol` and
+before opening a PR. After changing `protocol.yaml`, run `make protocol` and
 commit the generated files.
 
 ## Safety
@@ -170,7 +170,7 @@ can fall off. Three rules that are not negotiable:
    stops — before putting the robot on a table.
 2. **Fit wheel guards** before the first session with a cat.
 3. **Keep the motor-rail kill switch reachable.** It cuts the motors while
-   leaving the computer running, so you can see what happened.
+   leaving the computer running so the failure can be inspected.
 
 ## License
 
